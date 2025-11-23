@@ -1,0 +1,53 @@
+// lib/main.dart
+import 'package:flutter/material.dart';
+import 'supabase_client.dart';
+import 'auth_gate.dart';   // <-- NEW
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initSupabase();
+  runApp(const ConnectHiveApp());
+}
+
+class ConnectHiveApp extends StatelessWidget {
+  const ConnectHiveApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'B-Hive',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        // Use Material 2 so we don’t get the weird M3 AppBar defaults
+        useMaterial3: true,
+
+        // You can keep the seeded color scheme if you want
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color.fromARGB(255, 241, 178, 70),
+          brightness: Brightness.dark,
+        ),
+
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          foregroundColor: Colors.white,
+          titleSpacing: 0,
+          titleTextStyle: TextStyle(
+            color: Colors.white,
+            fontSize: 22,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.3,
+            shadows: [
+              Shadow(
+                blurRadius: 4,
+                color: Colors.black87,
+                offset: Offset(1, 1),
+              ),
+            ],
+          ),
+        ),
+      ),
+      home: const AuthGate(), // <-- use gate instead of LandingScreen
+    );
+  }
+}
