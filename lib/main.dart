@@ -1,7 +1,8 @@
 // lib/main.dart
 import 'package:flutter/material.dart';
 import 'supabase_client.dart';
-import 'auth_gate.dart';   // <-- NEW
+
+import 'screens/splash_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,10 +19,8 @@ class ConnectHiveApp extends StatelessWidget {
       title: 'B-Hive',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        // Use Material 2 so we don’t get the weird M3 AppBar defaults
-        useMaterial3: true,
+        useMaterial3: false, // keep M2 for nicer AppBar styling
 
-        // You can keep the seeded color scheme if you want
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color.fromARGB(255, 241, 178, 70),
           brightness: Brightness.dark,
@@ -47,7 +46,9 @@ class ConnectHiveApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const AuthGate(), // <-- use gate instead of LandingScreen
+
+      // ⬇️ Always show splash first, then it will push AuthGate
+      home: const SplashScreen(),
     );
   }
 }

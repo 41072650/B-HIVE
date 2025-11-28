@@ -1,25 +1,38 @@
 // lib/screens/company_list_screen.dart
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+
 import '../supabase_client.dart';
 import 'company_detail_screen.dart';
 import '../widgets/hive_background.dart';
+// 👇 NEW: import the unified business screen
+import 'business_profile_screen.dart';
 
-enum CompanySort { newest, rating, name }
+enum CompanySort { newest, rating, name, closest }
 
 class CompanyListScreen extends StatefulWidget {
   const CompanyListScreen({super.key});
 
   @override
-  State<CompanyListScreen> createState() => _CompanyListScreenState();
+  State<CompanyListScreen> createState() => CompanyListScreenState();
 }
 
-class _CompanyListScreenState extends State<CompanyListScreen> {
+class CompanyListScreenState extends State<CompanyListScreen> {
   bool _loading = true;
   List<dynamic> _companies = [];
 
   String _searchQuery = "";
   String _selectedCategoryFilter = 'All';
   CompanySort _sortBy = CompanySort.newest;
+
+  double? _userLat;
+  double? _userLon;
+
+  // Can be called from other screens (e.g. after business profile changes)
+  Future<void> reloadCompanies() async {
+    await _loadCompanies();
+  }
 
   @override
   void initState() {
@@ -63,6 +76,70 @@ class _CompanyListScreenState extends State<CompanyListScreen> {
     }
   }
 
+  // Haversine distance in km
+  double _distanceKm(
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
+    const R = 6371.0; // Earth radius in km
+    final dLat = (lat2 - lat1) * (math.pi / 180);
+    final dLon = (lon2 - lon1) * (math.pi / 180);
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1 * math.pi / 180) *
+            math.cos(lat2 * math.pi / 180) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return R * c;
+  }
+
+  Future<void> _ensureLocation() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Location services are disabled.')),
+        );
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content:
+                Text('Location permission denied. Cannot sort by distance.'),
+          ),
+        );
+        return;
+      }
+
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _userLat = pos.latitude;
+        _userLon = pos.longitude;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not get location: $e')),
+      );
+    }
+  }
+
   List<dynamic> get _filteredCompanies {
     final query = _searchQuery.trim().toLowerCase();
 
@@ -90,14 +167,38 @@ class _CompanyListScreenState extends State<CompanyListScreen> {
           final da = _parseDate(a['inserted_at']);
           final db = _parseDate(b['inserted_at']);
           return db.compareTo(da); // newest first
+
         case CompanySort.rating:
           final ra = (a['rating_avg'] ?? 0).toDouble();
           final rb = (b['rating_avg'] ?? 0).toDouble();
           return rb.compareTo(ra); // highest rating first
+
         case CompanySort.name:
           final na = (a['name'] ?? '').toString().toLowerCase();
           final nb = (b['name'] ?? '').toString().toLowerCase();
           return na.compareTo(nb); // A–Z
+
+        case CompanySort.closest:
+          final userLat = _userLat;
+          final userLon = _userLon;
+          if (userLat == null || userLon == null) {
+            // No user location, keep current order
+            return 0;
+          }
+
+          final la = (a['latitude'] as num?)?.toDouble();
+          final loa = (a['longitude'] as num?)?.toDouble();
+          final lb = (b['latitude'] as num?)?.toDouble();
+          final lob = (b['longitude'] as num?)?.toDouble();
+
+          // If any company does not have coordinates, don't reorder
+          if (la == null || loa == null || lb == null || lob == null) {
+            return 0;
+          }
+
+          final da = _distanceKm(userLat, userLon, la, loa);
+          final db = _distanceKm(userLat, userLon, lb, lob);
+          return da.compareTo(db); // closest first
       }
     });
 
@@ -114,6 +215,23 @@ class _CompanyListScreenState extends State<CompanyListScreen> {
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
+          // 👇 NEW: My Business button (opens unified create/edit screen)
+          IconButton(
+            tooltip: 'My Business',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => BusinessProfileScreen(
+                    onBusinessChanged: () {
+                      // When business is created/updated, reload this list
+                      reloadCompanies();
+                    },
+                  ),
+                ),
+              );
+            },
+            icon: const Icon(Icons.storefront, color: Colors.white),
+          ),
           IconButton(
             onPressed: _loadCompanies,
             icon: const Icon(Icons.refresh, color: Colors.white),
@@ -233,9 +351,19 @@ class _CompanyListScreenState extends State<CompanyListScreen> {
                           value: CompanySort.name,
                           child: Text('A–Z'),
                         ),
+                        DropdownMenuItem(
+                          value: CompanySort.closest,
+                          child: Text('Closest'),
+                        ),
                       ],
-                      onChanged: (value) {
+                      onChanged: (value) async {
                         if (value == null) return;
+
+                        if (value == CompanySort.closest &&
+                            (_userLat == null || _userLon == null)) {
+                          await _ensureLocation();
+                        }
+
                         setState(() {
                           _sortBy = value;
                         });
@@ -272,19 +400,41 @@ class _CompanyListScreenState extends State<CompanyListScreen> {
                             final ratingCount =
                                 (company['rating_count'] ?? 0) as int;
 
+                            // 🧭 Compute distance if we have user + company coordinates
+                            double? distanceKm;
+                            if (_userLat != null &&
+                                _userLon != null &&
+                                company['latitude'] != null &&
+                                company['longitude'] != null) {
+                              final lat =
+                                  (company['latitude'] as num).toDouble();
+                              final lon =
+                                  (company['longitude'] as num).toDouble();
+                              distanceKm =
+                                  _distanceKm(_userLat!, _userLon!, lat, lon);
+                            }
+
+                            // 📝 Build subtitle text
+                            String subtitleText =
+                                '${company['category'] ?? ''} • ${company['city'] ?? ''}';
+                            if (distanceKm != null) {
+                              subtitleText +=
+                                  ' • ${distanceKm.toStringAsFixed(1)} km away';
+                            }
+
                             return ListTile(
                               leading: const CircleAvatar(
                                 backgroundColor: Colors.white24,
-                                child: Icon(Icons.business,
-                                    color: Colors.white),
+                                child: Icon(Icons.business, color: Colors.white),
                               ),
                               title: Text(
                                 company['name'] ?? '',
                                 style: const TextStyle(color: Colors.white),
                               ),
                               subtitle: Text(
-                                '${company['category'] ?? ''} • ${company['city'] ?? ''}',
-                                style: const TextStyle(color: Colors.white70),
+                                subtitleText,
+                                style:
+                                    const TextStyle(color: Colors.white70),
                               ),
                               trailing: ratingCount == 0
                                   ? const Text(
@@ -294,8 +444,11 @@ class _CompanyListScreenState extends State<CompanyListScreen> {
                                   : Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        const Icon(Icons.star,
-                                            color: Colors.amber, size: 18),
+                                        const Icon(
+                                          Icons.star,
+                                          color: Colors.amber,
+                                          size: 18,
+                                        ),
                                         const SizedBox(width: 2),
                                         Text(
                                           ratingAvg.toStringAsFixed(1),
@@ -304,14 +457,18 @@ class _CompanyListScreenState extends State<CompanyListScreen> {
                                         ),
                                       ],
                                     ),
-                              onTap: () {
-                                Navigator.push(
+                              onTap: () async {
+                                final changed = await Navigator.push<bool>(
                                   context,
                                   MaterialPageRoute(
                                     builder: (_) =>
                                         CompanyDetailScreen(company: company),
                                   ),
                                 );
+
+                                if (changed == true) {
+                                  _loadCompanies();
+                                }
                               },
                             );
                           },

@@ -1,10 +1,11 @@
 // lib/screens/landing_screen.dart
 import 'package:flutter/material.dart';
-import 'company_list_screen.dart';
-import 'create_company_screen.dart';
-import 'edit_profile_screen.dart';
-import '../widgets/hive_background.dart';
+
 import '../supabase_client.dart';
+import 'company_list_screen.dart';
+import 'edit_profile_screen.dart';
+import 'business_stats_screen.dart';
+import 'business_profile_screen.dart';
 
 class LandingScreen extends StatefulWidget {
   const LandingScreen({super.key});
@@ -14,159 +15,133 @@ class LandingScreen extends StatefulWidget {
 }
 
 class _LandingScreenState extends State<LandingScreen> {
-  String? _avatarUrl;
-  bool _loadingAvatar = false;
+  // Key to reload company list when needed
+  final GlobalKey<CompanyListScreenState> _companyListKey =
+      GlobalKey<CompanyListScreenState>();
+
+  int _selectedIndex = 0;
+  bool _isBusiness = false;
 
   @override
   void initState() {
     super.initState();
-    _loadAvatar();
+    _loadBusinessMode();
   }
 
-  Future<void> _loadAvatar() async {
+  Future<void> _loadBusinessMode() async {
     final user = supabase.auth.currentUser;
     if (user == null) return;
-
-    setState(() {
-      _loadingAvatar = true;
-    });
 
     try {
       final data = await supabase
           .from('profiles')
-          .select('avatar_url')
+          .select('is_business')
           .eq('id', user.id)
           .maybeSingle();
 
       if (!mounted) return;
+
       setState(() {
-        _avatarUrl = (data?['avatar_url'] as String?) ?? '';
+        _isBusiness = (data?['is_business'] as bool?) ?? false;
       });
     } catch (_) {
-      // you can log or show an error if you want
-    } finally {
-      if (!mounted) return;
-      setState(() {
-        _loadingAvatar = false;
-      });
+      // keep default false
     }
   }
 
-  Widget _buildProfileAvatar() {
-    ImageProvider imageProvider;
+  /// Called when a business is created or updated
+  void _onBusinessChanged() {
+    // Refresh companies list
+    _companyListKey.currentState?.reloadCompanies();
 
-    if (_avatarUrl != null && _avatarUrl!.isNotEmpty) {
-      imageProvider = NetworkImage(_avatarUrl!);
-    } else {
-      imageProvider = const AssetImage('assets/default_profile.png');
-    }
+    // Jump back to home tab
+    setState(() {
+      _selectedIndex = 0;
+    });
+  }
 
-    return GestureDetector(
-      onTap: () async {
-        await Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const EditProfileScreen()),
-        );
-        // reload avatar when coming back from edit screen
-        _loadAvatar();
-      },
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          CircleAvatar(
-            radius: 28,
-            backgroundColor: Colors.white24,
-            backgroundImage: imageProvider,
-          ),
-          if (_loadingAvatar)
-            const SizedBox(
-              height: 30,
-              width: 30,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-              ),
-            ),
-        ],
-      ),
-    );
+  void _onTabTapped(int index) {
+    setState(() => _selectedIndex = index);
   }
 
   @override
   Widget build(BuildContext context) {
+    // ----------------------------
+    // TAB SCREENS
+    // ----------------------------
+    final List<Widget> tabs = [
+      // 0: Home (companies list)
+      CompanyListScreen(key: _companyListKey),
+
+      // 1: My Business (only if business mode)
+      if (_isBusiness)
+        BusinessProfileScreen(
+          onBusinessChanged: _onBusinessChanged,
+        ),
+
+      // 2: Business stats (only if business mode)
+      if (_isBusiness)
+        const BusinessStatsScreen(),
+
+      // Last: Profile (always shown)
+      EditProfileScreen(
+        onBusinessModeChanged: (isBusiness) {
+          setState(() {
+            _isBusiness = isBusiness;
+          });
+        },
+      ),
+    ];
+
+    // ----------------------------
+    // BOTTOM NAV ITEMS
+    // ----------------------------
+    final List<BottomNavigationBarItem> items = [
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.home_rounded),
+        label: 'Home',
+      ),
+      if (_isBusiness)
+        const BottomNavigationBarItem(
+          icon: Icon(Icons.storefront_rounded),
+          label: 'My Business',
+        ),
+      if (_isBusiness)
+        const BottomNavigationBarItem(
+          icon: Icon(Icons.bar_chart_rounded),
+          label: 'Stats',
+        ),
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.person_rounded),
+        label: 'Profile',
+      ),
+    ];
+
+    // ----------------------------
+    // FIX OUT-OF-RANGE INDEX
+    // ----------------------------
+    int currentIndex = _selectedIndex;
+    if (currentIndex >= tabs.length) {
+      currentIndex = tabs.length - 1;
+    }
+
     return Scaffold(
       extendBodyBehindAppBar: true,
-      body: HiveBackground(
-        child: Stack(
-          children: [
-            // top-left profile circle
-            Positioned(
-              top: 50,
-              left: 20,
-              child: _buildProfileAvatar(),
-            ),
 
-            // main landing content
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Text(
-                      'B-Hive\nThe lifeline of companies.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      '• Discover trusted companies by category & location\n'
-                      '• View project history, pricing, and ratings\n'
-                      '• Showcase your own company and win more work',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.white70),
-                    ),
-                    const SizedBox(height: 32),
-                    ElevatedButton(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const CompanyListScreen(),
-                          ),
-                        );
-                      },
-                      child: const Text('Explore Companies'),
-                    ),
-                    const SizedBox(height: 12),
-                    OutlinedButton(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const CreateCompanyScreen(),
-                          ),
-                        );
-                      },
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Colors.white70),
-                      ),
-                      child: const Text(
-                        'Create Company Profile',
-                        style: TextStyle(color: Colors.white),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
+      body: IndexedStack(
+        index: currentIndex,
+        children: tabs,
+      ),
+
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: currentIndex,
+        onTap: _onTabTapped,
+        backgroundColor: const Color.fromARGB(255, 10, 10, 10),
+        selectedItemColor: const Color.fromARGB(255, 241, 178, 70),
+        unselectedItemColor: Colors.white60,
+        showUnselectedLabels: true,
+        type: BottomNavigationBarType.fixed,
+        items: items,
       ),
     );
   }

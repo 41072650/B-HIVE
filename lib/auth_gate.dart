@@ -3,8 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; // <-- brings in AuthState
 import 'supabase_client.dart';
 
-import 'screens/landing_screen.dart';
+
 import 'screens/auth_screen.dart';
+import 'screens/landing_screen.dart'; // add at top
+
+
+
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});

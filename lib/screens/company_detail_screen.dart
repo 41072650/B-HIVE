@@ -1,7 +1,14 @@
 // lib/screens/company_detail_screen.dart
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:share_plus/share_plus.dart';
+
 import '../supabase_client.dart';
 import '../widgets/hive_background.dart';
+import 'company_services_screen.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import '../services/event_tracker.dart';
+import '../services/analytics_service.dart'; // 👈 NEW
 
 class CompanyDetailScreen extends StatefulWidget {
   final Map<String, dynamic> company;
@@ -15,68 +22,323 @@ class CompanyDetailScreen extends StatefulWidget {
 class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
   double _userRating = 0;
 
-  List<String> _splitLines(String? text) {
-    if (text == null || text.trim().isEmpty) return [];
-    return text
-        .split('\n')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
+  @override
+  void initState() {
+    super.initState();
+
+    // Track a view once the widget is fully built
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final companyId = widget.company['id'].toString();
+
+      // Detailed event log
+      EventTracker.trackCompanyEvent(
+        companyId: companyId,
+        eventType: 'view',
+      );
+
+      // Aggregated daily stats
+      AnalyticsService.trackCompanyAction(companyId, 'view');
+    });
+
+    _loadMyRating();
   }
 
-  List<String> _splitComma(String? text) {
-    if (text == null || text.trim().isEmpty) return [];
-    return text
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
+  // ---------- Rating logic ----------
+
+  Future<void> _loadMyRating() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+
+    try {
+      final data = await supabase
+          .from('ratings')
+          .select('rating')
+          .eq('company_id', widget.company['id'])
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+      if (!mounted || data == null) return;
+
+      setState(() {
+        final r = data['rating'];
+        _userRating = (r is num) ? r.toDouble() : 0.0;
+      });
+    } catch (_) {
+      // silently ignore
+    }
+  }
+
+  // ---------- Contacts logging ----------
+
+  Future<void> _logContact(String action) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      // Not logged in – you can show a snackbar or redirect to login
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please log in to track contacts')),
+      );
+      return;
+    }
+
+    try {
+      await supabase.from('contacts').insert({
+        'user_id': user.id,
+        'company_id': widget.company['id'],
+        'action': action,
+        'status': 'waiting', // default when they first contact
+      });
+    } catch (e) {
+      debugPrint('Error logging contact: $e');
+    }
   }
 
   Future<void> _submitRating() async {
     if (_userRating <= 0) return;
 
-    final company = widget.company;
-    final id = company['id'];
+    try {
+      final user = supabase.auth.currentUser;
+      if (user == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('You must be logged in to rate.')),
+        );
+        return;
+      }
 
-    final currentAvg = (company['rating_avg'] ?? 0).toDouble();
-    final currentCount = (company['rating_count'] ?? 0) as int;
+      final companyId = widget.company['id'];
 
-    final newCount = currentCount + 1;
-    final newAvg = ((currentAvg * currentCount) + _userRating) / newCount;
+      // Track rating submission (detailed event)
+      await EventTracker.trackCompanyEvent(
+        companyId: companyId.toString(),
+        eventType: 'rating_submit',
+        meta: {
+          'rating': _userRating,
+        },
+      );
 
-    await supabase
-        .from('companies')
-        .update({'rating_avg': newAvg, 'rating_count': newCount})
-        .eq('id', id);
+      await supabase.from('ratings').upsert(
+        {
+          'company_id': companyId,
+          'user_id': user.id,
+          'rating': _userRating,
+        },
+        onConflict: 'company_id,user_id',
+      );
 
-    setState(() {
-      widget.company['rating_avg'] = newAvg;
-      widget.company['rating_count'] = newCount;
-      _userRating = 0;
-    });
+      await supabase.rpc('update_company_rating', params: {
+        'company_id_input': companyId.toString(),
+      });
 
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Thanks for rating!')),
-    );
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Your rating has been saved.')),
+      );
+
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error submitting rating: $e')),
+      );
+    }
   }
+
+  // ---------- ACTION BUTTON HELPERS ----------
+
+  Future<void> _callCompany(String? phone) async {
+    // log a contact for "call"
+    await _logContact('call');
+
+    final companyId = widget.company['id'].toString();
+
+    // Detailed event log
+    await EventTracker.trackCompanyEvent(
+      companyId: companyId,
+      eventType: 'call',
+      meta: {
+        'phone': phone ?? '',
+        'source': 'company_detail_screen',
+      },
+    );
+
+    // Aggregated daily stats
+    AnalyticsService.trackCompanyAction(companyId, 'call');
+
+    if (phone == null || phone.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No phone number available.')),
+      );
+      return;
+    }
+
+    final uri = Uri(scheme: 'tel', path: phone.trim());
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not launch phone dialer.')),
+      );
+    }
+  }
+
+  Future<void> _whatsappCompany(String? phone) async {
+    // log a contact for "whatsapp"
+    await _logContact('whatsapp');
+
+    final companyId = widget.company['id'].toString();
+
+    // Detailed event log
+    await EventTracker.trackCompanyEvent(
+      companyId: companyId,
+      eventType: 'whatsapp',
+      meta: {
+        'phone': phone ?? '',
+        'source': 'company_detail_screen',
+      },
+    );
+
+    if (phone == null || phone.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No phone number available.')),
+      );
+      return;
+    }
+
+    // very simple normalisation – remove spaces
+    final clean = phone.replaceAll(' ', '');
+    final uri = Uri.parse('https://wa.me/$clean');
+
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open WhatsApp.')),
+      );
+    }
+  }
+
+  /// Directions: try maps_url first, then fall back to address + city.
+  Future<void> _openDirections(
+    String? address,
+    String? city,
+    String? mapsUrl,
+  ) async {
+    final companyId = widget.company['id'].toString();
+
+    // Detailed event log
+    await EventTracker.trackCompanyEvent(
+      companyId: companyId,
+      eventType: 'directions',
+      meta: {
+        'address': address ?? '',
+        'city': city ?? '',
+        'maps_url': mapsUrl ?? '',
+        'source': 'company_detail_screen',
+      },
+    );
+
+    // Aggregated daily stats
+    AnalyticsService.trackCompanyAction(companyId, 'directions');
+
+    Uri? uri;
+
+    // 1️⃣ If we have an explicit Google Maps URL, use that
+    if (mapsUrl != null && mapsUrl.trim().isNotEmpty) {
+      try {
+        uri = Uri.parse(mapsUrl.trim());
+      } catch (_) {
+        uri = null;
+      }
+    }
+
+    // 2️⃣ Otherwise fall back to address + city search
+    if (uri == null) {
+      final query = (address != null && address.trim().isNotEmpty)
+          ? '$address, ${city ?? ''}'
+          : (city ?? '');
+
+      if (query.trim().isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No address available for directions.')),
+        );
+        return;
+      }
+
+      final encoded = Uri.encodeComponent(query);
+      uri = Uri.parse(
+        'https://www.google.com/maps/search/?api=1&query=$encoded',
+      );
+    }
+
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open maps.')),
+      );
+    }
+  }
+
+  Future<void> _shareCompany(Map<String, dynamic> c) async {
+    // (we DON'T log this as a contact to avoid breaking the SQL check constraint)
+
+    final companyId = c['id'].toString();
+
+    // Detailed event log
+    await EventTracker.trackCompanyEvent(
+      companyId: companyId,
+      eventType: 'share',
+      meta: {
+        'source': 'company_detail_screen',
+      },
+    );
+
+    final name = c['name']?.toString() ?? 'Company';
+    final slogan = c['slogan']?.toString() ?? '';
+    final city = c['city']?.toString() ?? '';
+    final category = c['category']?.toString() ?? '';
+    final website = c['website']?.toString() ?? '';
+    final phone = c['phone']?.toString() ?? '';
+    final mapsUrl = c['maps_url']?.toString() ?? '';
+
+    final text = StringBuffer()
+      ..writeln(name)
+      ..writeln(slogan.isNotEmpty ? '"$slogan"' : '')
+      ..writeln([category, city].where((e) => e.isNotEmpty).join(' • '))
+      ..writeln()
+      ..writeln('Phone: $phone')
+      ..writeln('Website: $website');
+
+    if (mapsUrl.isNotEmpty) {
+      text.writeln('Location: $mapsUrl');
+    }
+
+    await Share.share(text.toString().trim());
+  }
+
+  // ---------- UI ----------
 
   @override
   Widget build(BuildContext context) {
     final c = widget.company;
-    final ratingAvg = (c['rating_avg'] ?? 0).toDouble();
-    final ratingCount = (c['rating_count'] ?? 0) as int;
 
-    final services = _splitComma(c['services'] as String?);
-    final prices = _splitLines(c['prices'] as String?);
-    final imageUrls = _splitComma(c['image_urls'] as String?);
+    final ratingAvg =
+        (c['rating_avg'] is num) ? (c['rating_avg'] as num).toDouble() : 0.0;
+    final ratingCount =
+        (c['rating_count'] is num) ? (c['rating_count'] as num).toInt() : 0;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         title: Text(
-          c['name'] ?? '',
+          c['name']?.toString() ?? '',
           style: const TextStyle(color: Colors.white),
         ),
         backgroundColor: Colors.transparent,
@@ -100,6 +362,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // Header
                       Row(
                         children: [
                           const CircleAvatar(
@@ -112,7 +375,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  c['name'] ?? '',
+                                  c['name']?.toString() ?? '',
                                   style: const TextStyle(
                                     fontSize: 20,
                                     fontWeight: FontWeight.bold,
@@ -122,7 +385,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                                 if (c['slogan'] != null &&
                                     c['slogan'].toString().isNotEmpty)
                                   Text(
-                                    c['slogan'],
+                                    c['slogan'].toString(),
                                     style: const TextStyle(
                                       fontStyle: FontStyle.italic,
                                       color: Colors.white70,
@@ -139,6 +402,8 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                         ],
                       ),
                       const SizedBox(height: 16),
+
+                      // Rating summary
                       Row(
                         children: [
                           const Text(
@@ -165,6 +430,8 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                         ],
                       ),
                       const SizedBox(height: 16),
+
+                      // Description
                       const Text(
                         'Description',
                         style: TextStyle(
@@ -173,102 +440,13 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                         ),
                       ),
                       Text(
-                        c['description'] ?? '—',
+                        c['description']?.toString() ?? '—',
                         style: const TextStyle(color: Colors.white70),
                       ),
+
                       const SizedBox(height: 16),
-                      const Text(
-                        'Services',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                      if (services.isEmpty)
-                        const Text('—',
-                            style: TextStyle(color: Colors.white70))
-                      else
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: services
-                              .map(
-                                (s) => Text(
-                                  '• $s',
-                                  style:
-                                      const TextStyle(color: Colors.white70),
-                                ),
-                              )
-                              .toList(),
-                        ),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'Prices',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                      if (prices.isEmpty)
-                        const Text('—',
-                            style: TextStyle(color: Colors.white70))
-                      else
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: prices
-                              .map(
-                                (p) => Text(
-                                  '• $p',
-                                  style:
-                                      const TextStyle(color: Colors.white70),
-                                ),
-                              )
-                              .toList(),
-                        ),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'Project History',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      if (imageUrls.isEmpty)
-                        const Text(
-                          'No project images yet.',
-                          style: TextStyle(color: Colors.white70),
-                        )
-                      else
-                        SizedBox(
-                          height: 120,
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: imageUrls.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(width: 8),
-                            itemBuilder: (context, index) {
-                              final url = imageUrls[index];
-                              return AspectRatio(
-                                aspectRatio: 4 / 3,
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: Image.network(
-                                    url,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => Container(
-                                      color: Colors.grey.shade800,
-                                      child: const Icon(
-                                        Icons.broken_image,
-                                        color: Colors.white54,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      const SizedBox(height: 16),
+
+                      // Contact
                       const Text(
                         'Contact',
                         style: TextStyle(
@@ -284,8 +462,80 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                         'Phone: ${c['phone'] ?? '—'}',
                         style: const TextStyle(color: Colors.white70),
                       ),
+                      Text(
+                        'Website: ${c['website'] ?? '—'}',
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+
+                      const SizedBox(height: 12),
+
+                      // 🔹 ACTION BUTTONS (call, WhatsApp, directions, share)
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          ElevatedButton.icon(
+                            onPressed: () =>
+                                _callCompany(c['phone']?.toString()),
+                            icon: const Icon(Icons.call),
+                            label: const Text('Call'),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: () =>
+                                _whatsappCompany(c['phone']?.toString()),
+                            icon: const FaIcon(FontAwesomeIcons.whatsapp),
+                            label: const Text('WhatsApp'),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: () => _openDirections(
+                              c['address']?.toString(),
+                              c['city']?.toString(),
+                              c['maps_url']?.toString(),
+                            ),
+                            icon: const Icon(Icons.directions),
+                            label: const Text('Directions'),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: () => _shareCompany(c),
+                            icon: const Icon(Icons.share),
+                            label: const Text('Share'),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 24),
+
+                      // Services & pricing button
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          // Track viewing services (detailed event)
+                          final companyId = c['id'].toString();
+                          await EventTracker.trackCompanyEvent(
+                            companyId: companyId,
+                            eventType: 'view_services',
+                            meta: {
+                              'source': 'company_detail_screen',
+                            },
+                          );
+
+                          if (!mounted) return;
+
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  CompanyServicesScreen(company: c),
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.list),
+                        label: const Text('View services & pricing'),
+                      ),
+
                       const SizedBox(height: 24),
                       Divider(color: Colors.white24),
+
+                      // Rating input
                       const Text(
                         'Rate this company',
                         style: TextStyle(
