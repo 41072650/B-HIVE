@@ -1,8 +1,10 @@
 // lib/screens/business_profile_screen.dart
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+
 import '../supabase_client.dart';
 import '../widgets/hive_background.dart';
+import '../widgets/bhive_inputs.dart';
 
 class BusinessProfileScreen extends StatefulWidget {
   final VoidCallback? onBusinessChanged;
@@ -383,28 +385,6 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     }
   }
 
-  InputDecoration _inputDecoration(String label, {String? hint}) {
-    return InputDecoration(
-      labelText: label,
-      hintText: hint,
-      hintStyle: const TextStyle(color: Colors.white38),
-      labelStyle: const TextStyle(color: Colors.white70),
-      filled: true,
-      fillColor: Colors.black.withOpacity(0.4),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: const BorderSide(color: Colors.white24),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: const BorderSide(color: Colors.white70, width: 1.5),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final isEditingExisting = !_isCreatingNew && _companyId != null;
@@ -497,59 +477,54 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
 
                                   // Header section: mode & company selector
                                   if (_myCompanies.isNotEmpty) ...[
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: DropdownButtonFormField<String>(
-                                            value: isEditingExisting ? _companyId : null,
-                                            decoration: _inputDecoration('Select company'),
-                                            dropdownColor: const Color(0xFF020617),
-                                            style: const TextStyle(color: Colors.white),
-                                            items: _myCompanies
-                                                .map(
-                                                  (c) => DropdownMenuItem<String>(
-                                                    value: c['id']?.toString(),
-                                                    child: Text(
-                                                      (c['name'] ?? 'Unnamed company')
-                                                          .toString(),
-                                                    ),
-                                                  ),
-                                                )
-                                                .toList()
-                                              ..insert(
-                                                0,
-                                                const DropdownMenuItem(
-                                                  value: null,
-                                                  child: Text('Create new company'),
-                                                ),
+                                    DropdownButtonFormField<String>(
+                                      value: isEditingExisting ? _companyId : null,
+                                      decoration: bhiveInputDecoration('Select company'),
+                                      dropdownColor: const Color(0xFF020617),
+                                      style: const TextStyle(color: Colors.white),
+                                      items: _myCompanies
+                                          .map(
+                                            (c) => DropdownMenuItem<String>(
+                                              value: c['id']?.toString(),
+                                              child: Text(
+                                                (c['name'] ??
+                                                        'Unnamed company')
+                                                    .toString(),
                                               ),
-                                            onChanged: (value) {
-                                              if (value == null) {
-                                                // Switch to create mode
-                                                setState(() {
-                                                  _isCreatingNew = true;
-                                                  _companyId = null;
-                                                  _clearForm();
-                                                });
-                                              } else {
-                                                final company = _myCompanies.firstWhere(
-                                                  (c) =>
-                                                      c['id']?.toString() == value,
-                                                );
-                                                _applyCompany(company);
-                                                final name =
-                                                    (company['name'] ?? 'your company')
-                                                        .toString();
-                                                ScaffoldMessenger.of(context).showSnackBar(
-                                                  SnackBar(
-                                                    content: Text('Switched to $name'),
-                                                  ),
-                                                );
-                                              }
-                                            },
+                                            ),
+                                          )
+                                          .toList()
+                                        ..insert(
+                                          0,
+                                          const DropdownMenuItem(
+                                            value: null,
+                                            child: Text('Create new company'),
                                           ),
                                         ),
-                                      ],
+                                      onChanged: (value) {
+                                        if (value == null) {
+                                          // Switch to create mode
+                                          setState(() {
+                                            _isCreatingNew = true;
+                                            _companyId = null;
+                                            _clearForm();
+                                          });
+                                        } else {
+                                          final company = _myCompanies.firstWhere(
+                                            (c) => c['id']?.toString() == value,
+                                          );
+                                          _applyCompany(company);
+                                          final name =
+                                              (company['name'] ?? 'your company')
+                                                  .toString();
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content: Text('Switched to $name'),
+                                            ),
+                                          );
+                                        }
+                                      },
                                     ),
                                     const SizedBox(height: 16),
                                   ] else ...[
@@ -577,11 +552,11 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   const SizedBox(height: 16),
 
                                   // --- FORM FIELDS ---
-
                                   TextFormField(
                                     controller: _nameController,
                                     style: const TextStyle(color: Colors.white),
-                                    decoration: _inputDecoration('Company Name'),
+                                    decoration:
+                                        bhiveInputDecoration('Company Name'),
                                     validator: (v) => (v == null || v.isEmpty)
                                         ? 'Enter a company name'
                                         : null,
@@ -591,13 +566,14 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   TextFormField(
                                     controller: _sloganController,
                                     style: const TextStyle(color: Colors.white),
-                                    decoration: _inputDecoration('Company Slogan'),
+                                    decoration:
+                                        bhiveInputDecoration('Company Slogan'),
                                   ),
                                   const SizedBox(height: 12),
 
                                   DropdownButtonFormField<String>(
                                     value: _selectedCategory,
-                                    decoration: _inputDecoration('Category'),
+                                    decoration: bhiveInputDecoration('Category'),
                                     dropdownColor: const Color(0xFF020617),
                                     style: const TextStyle(color: Colors.white),
                                     items: _categories
@@ -618,7 +594,7 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   TextFormField(
                                     controller: _cityController,
                                     style: const TextStyle(color: Colors.white),
-                                    decoration: _inputDecoration('City'),
+                                    decoration: bhiveInputDecoration('City'),
                                     validator: (v) => (v == null || v.isEmpty)
                                         ? 'Enter a city'
                                         : null,
@@ -628,7 +604,7 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   TextFormField(
                                     controller: _mapsUrlController,
                                     style: const TextStyle(color: Colors.white),
-                                    decoration: _inputDecoration(
+                                    decoration: bhiveInputDecoration(
                                       'Google Maps Link',
                                       hint:
                                           'Paste the full Google Maps URL (with @lat,lon)',
@@ -641,15 +617,16 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                     controller: _descriptionController,
                                     style: const TextStyle(color: Colors.white),
                                     maxLines: 3,
-                                    decoration:
-                                        _inputDecoration('Short Description'),
+                                    decoration: bhiveInputDecoration(
+                                      'Short Description',
+                                    ),
                                   ),
                                   const SizedBox(height: 12),
 
                                   TextFormField(
                                     controller: _servicesController,
                                     style: const TextStyle(color: Colors.white),
-                                    decoration: _inputDecoration(
+                                    decoration: bhiveInputDecoration(
                                       'Services Offered (comma separated)',
                                     ),
                                   ),
@@ -659,7 +636,7 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                     controller: _pricesController,
                                     style: const TextStyle(color: Colors.white),
                                     maxLines: 3,
-                                    decoration: _inputDecoration(
+                                    decoration: bhiveInputDecoration(
                                       'Prices (one per line, e.g. "Engine design - R45 000")',
                                     ),
                                   ),
@@ -668,7 +645,7 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   TextFormField(
                                     controller: _imageUrlsController,
                                     style: const TextStyle(color: Colors.white),
-                                    decoration: _inputDecoration(
+                                    decoration: bhiveInputDecoration(
                                       'Project Image URLs (comma separated)',
                                     ),
                                   ),
@@ -678,7 +655,7 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                     controller: _emailController,
                                     style: const TextStyle(color: Colors.white),
                                     decoration:
-                                        _inputDecoration('Contact Email'),
+                                        bhiveInputDecoration('Contact Email'),
                                     keyboardType: TextInputType.emailAddress,
                                   ),
                                   const SizedBox(height: 12),
@@ -687,7 +664,7 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                     controller: _phoneController,
                                     style: const TextStyle(color: Colors.white),
                                     decoration:
-                                        _inputDecoration('Contact Phone'),
+                                        bhiveInputDecoration('Contact Phone'),
                                     keyboardType: TextInputType.phone,
                                   ),
                                   const SizedBox(height: 20),

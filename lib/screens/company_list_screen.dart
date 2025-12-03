@@ -6,8 +6,6 @@ import 'package:geolocator/geolocator.dart';
 import '../supabase_client.dart';
 import 'company_detail_screen.dart';
 import '../widgets/hive_background.dart';
-// 👇 NEW: import the unified business screen
-import 'business_profile_screen.dart';
 
 enum CompanySort { newest, rating, name, closest }
 
@@ -215,23 +213,6 @@ class CompanyListScreenState extends State<CompanyListScreen> {
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
-          // 👇 NEW: My Business button (opens unified create/edit screen)
-          IconButton(
-            tooltip: 'My Business',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => BusinessProfileScreen(
-                    onBusinessChanged: () {
-                      // When business is created/updated, reload this list
-                      reloadCompanies();
-                    },
-                  ),
-                ),
-              );
-            },
-            icon: const Icon(Icons.storefront, color: Colors.white),
-          ),
           IconButton(
             onPressed: _loadCompanies,
             icon: const Icon(Icons.refresh, color: Colors.white),

@@ -1,8 +1,11 @@
 // lib/screens/auth_screen.dart
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../supabase_client.dart';
 import '../widgets/hive_background.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'privacy_policy_screen.dart';
+import 'terms_of_service_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -13,8 +16,10 @@ class AuthScreen extends StatefulWidget {
 
 class _AuthScreenState extends State<AuthScreen> {
   final _formKey = GlobalKey<FormState>();
+
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
 
   bool _isLogin = true;
   bool _loading = false;
@@ -24,6 +29,7 @@ class _AuthScreenState extends State<AuthScreen> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _confirmPasswordController.dispose();
     super.dispose();
   }
 
@@ -36,68 +42,60 @@ class _AuthScreenState extends State<AuthScreen> {
     });
 
     try {
+      final email = _emailController.text.trim();
+      final password = _passwordController.text.trim();
+
       if (_isLogin) {
-        // --------------------------------------
-        // 🔐 SIGN IN
-        // --------------------------------------
+        // Sign in
         await supabase.auth.signInWithPassword(
-          email: _emailController.text.trim(),
-          password: _passwordController.text.trim(),
+          email: email,
+          password: password,
         );
-
-        // AuthGate will detect session and redirect.
       } else {
-        // --------------------------------------
-        // 📝 SIGN UP (email confirmation enabled)
-        // --------------------------------------
-        final res = await supabase.auth.signUp(
-          email: _emailController.text.trim(),
-          password: _passwordController.text.trim(),
-        );
-
-        // If email confirmation is required, session will be null.
-        if (res.session == null) {
-          // Switch to Login mode and instruct the user
+        // Sign up
+        if (password != _confirmPasswordController.text.trim()) {
           setState(() {
-            _isLogin = true;
-            _error = null;
+            _error = 'Passwords do not match';
           });
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                    'Account created! Please check your email to confirm, then sign in.'),
-              ),
-            );
-          }
-
-          return; // stop here (don’t go into the finally block below)
+          return;
         }
+
+        await supabase.auth.signUp(
+          email: email,
+          password: password,
+        );
       }
     } on AuthException catch (e) {
-      setState(() => _error = e.message);
+      setState(() {
+        _error = e.message;
+      });
     } catch (e) {
-      setState(() => _error = 'Unexpected error: $e');
+      setState(() {
+        _error = 'Something went wrong: $e';
+      });
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
     }
   }
 
-  InputDecoration _inputDecoration(String label) {
-    return InputDecoration(
-      labelText: label,
-      labelStyle: const TextStyle(color: Colors.white70),
-      filled: true,
-      fillColor: Colors.black.withOpacity(0.4),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: const BorderSide(color: Colors.white24),
+  void _openPrivacyPolicy() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const PrivacyPolicyScreen(),
       ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: const BorderSide(color: Colors.white70, width: 1.5),
+    );
+  }
+
+  void _openTermsOfService() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const TermsOfServiceScreen(),
       ),
     );
   }
@@ -108,104 +106,215 @@ class _AuthScreenState extends State<AuthScreen> {
       body: HiveBackground(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(20),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 400),
+              constraints: const BoxConstraints(maxWidth: 420),
               child: Container(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.7),
+                  color: Colors.black.withOpacity(0.65),
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: Colors.white24),
                 ),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'B-Hive',
+                      style: TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _isLogin
+                          ? 'Sign in to your account'
+                          : 'Create a new account',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+
+                    if (_error != null) ...[
                       Text(
-                        _isLogin ? 'Sign in to ConnectHive' : 'Create an account',
+                        _error!,
                         style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
+                          color: Colors.redAccent,
+                          fontSize: 13,
                         ),
                         textAlign: TextAlign.center,
                       ),
-                      const SizedBox(height: 16),
-
-                      if (_error != null) ...[
-                        Text(
-                          _error!,
-                          style: const TextStyle(color: Colors.redAccent),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 8),
-                      ],
-
-                      TextFormField(
-                        controller: _emailController,
-                        style: const TextStyle(color: Colors.white),
-                        cursorColor: Colors.white,
-                        decoration: _inputDecoration('Email'),
-                        keyboardType: TextInputType.emailAddress,
-                        validator: (v) =>
-                            (v == null || v.isEmpty) ? 'Enter email' : null,
-                      ),
-
                       const SizedBox(height: 12),
-
-                      TextFormField(
-                        controller: _passwordController,
-                        style: const TextStyle(color: Colors.white),
-                        cursorColor: Colors.white,
-                        decoration: _inputDecoration('Password'),
-                        obscureText: true,
-                        validator: (v) =>
-                            (v == null || v.length < 6)
-                                ? 'Minimum 6 characters'
-                                : null,
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      ElevatedButton(
-                        onPressed: _loading ? null : _submit,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          child: _loading
-                              ? const SizedBox(
-                                  height: 20,
-                                  width: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : Text(
-                                  _isLogin ? 'Sign In' : 'Sign Up',
-                                  style: const TextStyle(fontSize: 16),
-                                ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 12),
-
-                      TextButton(
-                        onPressed: _loading
-                            ? null
-                            : () {
-                                setState(() {
-                                  _isLogin = !_isLogin;
-                                  _error = null;
-                                });
-                              },
-                        child: Text(
-                          _isLogin
-                              ? "Don't have an account? Sign up"
-                              : "Already have an account? Sign in",
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                      ),
                     ],
-                  ),
+
+                    Form(
+                      key: _formKey,
+                      child: Column(
+                        children: [
+                          TextFormField(
+                            controller: _emailController,
+                            keyboardType: TextInputType.emailAddress,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              labelText: 'Email',
+                              labelStyle: TextStyle(color: Colors.white70),
+                              enabledBorder: UnderlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: Colors.white38),
+                              ),
+                              focusedBorder: UnderlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: Colors.white),
+                              ),
+                            ),
+                            validator: (value) {
+                              if (value == null ||
+                                  value.trim().isEmpty) {
+                                return 'Please enter your email';
+                              }
+                              if (!value.contains('@')) {
+                                return 'Please enter a valid email';
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          TextFormField(
+                            controller: _passwordController,
+                            obscureText: true,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              labelText: 'Password',
+                              labelStyle: TextStyle(color: Colors.white70),
+                              enabledBorder: UnderlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: Colors.white38),
+                              ),
+                              focusedBorder: UnderlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: Colors.white),
+                              ),
+                            ),
+                            validator: (value) {
+                              if (value == null ||
+                                  value.trim().isEmpty) {
+                                return 'Please enter your password';
+                              }
+                              if (value.trim().length < 6) {
+                                return 'Minimum 6 characters';
+                              }
+                              return null;
+                            },
+                          ),
+                          if (!_isLogin) ...[
+                            const SizedBox(height: 16),
+                            TextFormField(
+                              controller: _confirmPasswordController,
+                              obscureText: true,
+                              style:
+                                  const TextStyle(color: Colors.white),
+                              decoration: const InputDecoration(
+                                labelText: 'Confirm Password',
+                                labelStyle:
+                                    TextStyle(color: Colors.white70),
+                                enabledBorder: UnderlineInputBorder(
+                                  borderSide:
+                                      BorderSide(color: Colors.white38),
+                                ),
+                                focusedBorder: UnderlineInputBorder(
+                                  borderSide:
+                                      BorderSide(color: Colors.white),
+                                ),
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 24),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton(
+                              onPressed: _loading ? null : _submit,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 10),
+                                child: _loading
+                                    ? const SizedBox(
+                                        height: 20,
+                                        width: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor:
+                                              AlwaysStoppedAnimation<
+                                                  Color>(Colors.white),
+                                        ),
+                                      )
+                                    : Text(
+                                        _isLogin ? 'Sign In' : 'Sign Up',
+                                      ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // 🔐 Legal text + links
+                    const Text(
+                      'By continuing, you agree to our:',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        TextButton(
+                          onPressed: _openTermsOfService,
+                          child: const Text(
+                            'Terms of Service',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ),
+                        const Text(
+                          ' and ',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _openPrivacyPolicy,
+                          child: const Text(
+                            'Privacy Policy',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          _isLogin = !_isLogin;
+                        });
+                      },
+                      child: Text(
+                        _isLogin
+                            ? "Don't have an account? Sign up"
+                            : "Already have an account? Sign in",
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),

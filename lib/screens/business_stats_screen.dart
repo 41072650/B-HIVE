@@ -17,10 +17,16 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
   List<Map<String, dynamic>> _companies = [];
   Map<String, dynamic>? _selectedCompany;
 
-  // Stats
+  // Stats (30 days)
   int _viewsLast30 = 0;
   int _actionsLast30 = 0;
   Map<String, int> _eventCounts = {};
+
+  // Stats (7 days)
+  int _viewsLast7 = 0;
+  int _actionsLast7 = 0;
+
+  // For small "chart" of last 7 days
   List<_DailyViews> _last7DaysViews = [];
 
   @override
@@ -85,6 +91,8 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       _error = null;
       _viewsLast30 = 0;
       _actionsLast30 = 0;
+      _viewsLast7 = 0;
+      _actionsLast7 = 0;
       _eventCounts = {};
       _last7DaysViews = [];
     });
@@ -92,9 +100,13 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     try {
       final now = DateTime.now();
       final from30 = now.subtract(const Duration(days: 30));
-      final from30DateOnly =
-          DateTime(from30.year, from30.month, from30.day); // strip time
+      // Strip time for date-only comparison
+      final from30DateOnly = DateTime(from30.year, from30.month, from30.day);
       final from30Str = from30DateOnly.toIso8601String();
+
+      // We'll use this to detect "last 7 days"
+      final today = DateTime(now.year, now.month, now.day);
+      final last7Start = today.subtract(const Duration(days: 6)); // inclusive
 
       // ---- 1) Get aggregated daily stats (company_daily_stats) ----
       final dailyStats = await supabase
@@ -104,13 +116,14 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
           .gte('date', from30Str)
           .order('date');
 
-      int totalViews = 0;
-      int totalCalls = 0;
-      int totalDirections = 0;
-      final Map<DateTime, int> viewsPerDay = {};
+      int totalViews30 = 0;
+      int totalCalls30 = 0;
+      int totalDirections30 = 0;
 
-      final last7Start =
-          DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6));
+      int viewsLast7 = 0;           // views for last 7 days
+      int callDirLast7 = 0;         // calls + directions for last 7 days
+
+      final Map<DateTime, int> viewsPerDay = {};
 
       if (dailyStats is List) {
         for (final row in dailyStats) {
@@ -120,24 +133,34 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
 
           // Postgres date often comes as 'YYYY-MM-DD'
           final date = DateTime.parse(dateStr);
+          final dayKey = DateTime(date.year, date.month, date.day);
 
           final views = (map['views'] is num) ? (map['views'] as num).toInt() : 0;
           final calls = (map['calls'] is num) ? (map['calls'] as num).toInt() : 0;
-          final directions =
-              (map['directions'] is num) ? (map['directions'] as num).toInt() : 0;
+          final directions = (map['directions'] is num)
+              ? (map['directions'] as num).toInt()
+              : 0;
 
-          totalViews += views;
-          totalCalls += calls;
-          totalDirections += directions;
+          totalViews30 += views;
+          totalCalls30 += calls;
+          totalDirections30 += directions;
 
-          final dayKey = DateTime(date.year, date.month, date.day);
           viewsPerDay[dayKey] = (viewsPerDay[dayKey] ?? 0) + views;
+
+          // If this day is within the last 7 days, add to 7-day counters
+          if (!dayKey.isBefore(last7Start)) {
+            viewsLast7 += views;
+            callDirLast7 += (calls + directions);
+          }
         }
       }
 
-      // ---- 2) Get WhatsApp + share counts from company_events (last 30 days only) ----
-      int whatsappCount = 0;
-      int shareCount = 0;
+      // ---- 2) Get WhatsApp + share counts from company_events (last 30 days) ----
+      int whatsappCount30 = 0;
+      int shareCount30 = 0;
+
+      int whatsappLast7 = 0;
+      int shareLast7 = 0;
 
       final events = await supabase
           .from('company_events')
@@ -149,21 +172,39 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         for (final row in events) {
           final map = row as Map<String, dynamic>;
           final type = (map['event_type'] ?? '').toString();
+          final createdStr = map['created_at']?.toString();
+
+          DateTime? created;
+          if (createdStr != null) {
+            // created_at is usually ISO8601; this is fine for comparison
+            created = DateTime.tryParse(createdStr);
+          }
+
+          bool isInLast7 = false;
+          if (created != null) {
+            // Compare by date (ignore time)
+            final d = DateTime(created.year, created.month, created.day);
+            if (!d.isBefore(last7Start)) {
+              isInLast7 = true;
+            }
+          }
 
           if (type == 'whatsapp') {
-            whatsappCount++;
+            whatsappCount30++;
+            if (isInLast7) whatsappLast7++;
           } else if (type == 'share') {
-            shareCount++;
+            shareCount30++;
+            if (isInLast7) shareLast7++;
           }
         }
       }
 
       // ---- 3) Build last 7 days series from aggregated views ----
-      final List<_DailyViews> last7 = [];
+      final List<_DailyViews> last7List = [];
       for (int i = 0; i < 7; i++) {
         final day = last7Start.add(Duration(days: i));
         final dayKey = DateTime(day.year, day.month, day.day);
-        last7.add(
+        last7List.add(
           _DailyViews(
             date: dayKey,
             views: viewsPerDay[dayKey] ?? 0,
@@ -172,23 +213,28 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       }
 
       // ---- 4) Build totals + breakdown ----
-      final int actionsTotal =
-          totalCalls + totalDirections + whatsappCount + shareCount;
+      final int actionsTotal30 =
+          totalCalls30 + totalDirections30 + whatsappCount30 + shareCount30;
+
+      final int actionsTotal7 =
+          callDirLast7 + whatsappLast7 + shareLast7;
 
       final Map<String, int> counts = {
-        'view': totalViews,
-        'call': totalCalls,
-        'directions': totalDirections,
-        'whatsapp': whatsappCount,
-        'share': shareCount,
+        'view': totalViews30,
+        'call': totalCalls30,
+        'directions': totalDirections30,
+        'whatsapp': whatsappCount30,
+        'share': shareCount30,
       };
 
       setState(() {
         _loading = false;
-        _viewsLast30 = totalViews;
-        _actionsLast30 = actionsTotal;
+        _viewsLast30 = totalViews30;
+        _actionsLast30 = actionsTotal30;
+        _viewsLast7 = viewsLast7;
+        _actionsLast7 = actionsTotal7;
         _eventCounts = counts;
-        _last7DaysViews = last7;
+        _last7DaysViews = last7List;
       });
     } catch (e) {
       setState(() {
@@ -203,9 +249,28 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     return _actionsLast30 / _viewsLast30;
   }
 
+  double get _conversionRate7 {
+    if (_viewsLast7 == 0) return 0;
+    return _actionsLast7 / _viewsLast7;
+  }
+
+  int get _maxViewsInLast7 {
+    if (_last7DaysViews.isEmpty) return 0;
+    int max = 0;
+    for (final d in _last7DaysViews) {
+      if (d.views > max) max = d.views;
+    }
+    return max;
+  }
+
+  String _formatShortDate(DateTime d) {
+    return '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}';
+  }
+
   String _buildInsightsText() {
     if (_viewsLast30 == 0) {
-      return 'You have no views in the last 30 days yet.\n\nShare your profile link or ask customers to search for your business in the app to start seeing stats.';
+      return 'You have no views in the last 30 days yet.\n\n'
+          'Share your profile link or ask customers to search for your business in the app to start seeing stats.';
     }
 
     final buffer = StringBuffer();
@@ -216,17 +281,55 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     buffer.writeln(
         '• Your business had $_viewsLast30 profile views and $_actionsLast30 actions (calls, WhatsApps, directions and shares).');
 
+    // 1) Conversion quality (30 days)
     if (_conversionRate > 0.3) {
       buffer.writeln(
-          '• Your conversion rate is ${(100 * _conversionRate).toStringAsFixed(1)}%. That means a high percentage of people who view your profile also take action — great job!');
+          '• Your 30-day conversion rate is ${(100 * _conversionRate).toStringAsFixed(1)}%. A high percentage of people who view your profile also take action — great job!');
     } else if (_conversionRate > 0.1) {
       buffer.writeln(
-          '• Your conversion rate is ${(100 * _conversionRate).toStringAsFixed(1)}%. This is decent, but you could improve by making sure your phone, address and description are clear and inviting.');
+          '• Your 30-day conversion rate is ${(100 * _conversionRate).toStringAsFixed(1)}%. This is decent, but you could improve by making sure your phone, address and description are clear and inviting.');
     } else {
       buffer.writeln(
-          '• Your conversion rate is only ${(100 * _conversionRate).toStringAsFixed(1)}%. People are viewing your profile but not taking action.\n  Consider improving your description, adding a strong slogan, or updating your contact details.');
+          '• Your 30-day conversion rate is only ${(100 * _conversionRate).toStringAsFixed(1)}%. People are viewing your profile but not taking action.\n  Consider improving your description, adding a strong slogan, or updating your contact details.');
     }
 
+    // 2) Trend: last 7 days vs 30-day average
+    if (_viewsLast7 > 0) {
+      final expectedLast7 =
+          (_viewsLast30 / 30.0) * 7.0; // if traffic was flat
+      double ratio;
+      if (expectedLast7 <= 0) {
+        ratio = 1.0;
+      } else {
+        ratio = _viewsLast7 / expectedLast7;
+      }
+
+      if (ratio > 1.2) {
+        buffer.writeln(
+            '• Your traffic is trending UP: the last 7 days had more views than your 30-day average. Keep going — consider sharing your B-Hive profile link with more clients.');
+      } else if (ratio < 0.8) {
+        buffer.writeln(
+            '• Your traffic is trending DOWN: the last 7 days had fewer views than your 30-day average. Try refreshing your business description or sharing your profile to boost visibility.');
+      } else {
+        buffer.writeln(
+            '• Your traffic is fairly STABLE: the last 7 days are close to your 30-day average. Small changes to your profile can still improve results over time.');
+      }
+    }
+
+    // 3) Recent conversion vs overall
+    if (_viewsLast7 > 0 && _actionsLast7 > 0) {
+      final conv7 = _conversionRate7 * 100;
+      final conv30 = _conversionRate * 100;
+      if (conv7 > conv30 + 5) {
+        buffer.writeln(
+            '• Your recent conversion (last 7 days: ${conv7.toStringAsFixed(1)}%) is HIGHER than your overall 30-day conversion. The changes you made recently might be working — keep them.');
+      } else if (conv7 + 5 < conv30) {
+        buffer.writeln(
+            '• Your recent conversion (last 7 days: ${conv7.toStringAsFixed(1)}%) is LOWER than your 30-day average. Look at what changed in your profile or pricing and adjust if needed.');
+      }
+    }
+
+    // 4) Action breakdown & tips
     final calls = _eventCounts['call'] ?? 0;
     final whatsapp = _eventCounts['whatsapp'] ?? 0;
     final directions = _eventCounts['directions'] ?? 0;
@@ -239,15 +342,50 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       buffer.writeln('• You received $whatsapp WhatsApp tap(s).');
     }
     if (directions > 0) {
-      buffer.writeln('• Directions to your business were opened $directions time(s).');
+      buffer.writeln(
+          '• Directions to your business were opened $directions time(s).');
     }
     if (shares > 0) {
-      buffer.writeln('• Your profile was shared $shares time(s).');
+      buffer.writeln(
+          '• Your profile was shared $shares time(s). Word-of-mouth is helping you.');
     }
 
     if (calls == 0 && whatsapp == 0 && directions == 0 && shares == 0) {
       buffer.writeln(
           '• People are viewing your profile but not using the action buttons yet. Make sure your contact info is complete and easy to read.');
+    }
+
+    // 5) Top action type tip
+    final Map<String, int> actionMap = {
+      'Calls': calls,
+      'WhatsApp': whatsapp,
+      'Directions': directions,
+      'Shares': shares,
+    };
+
+    String? topKey;
+    int topValue = 0;
+    actionMap.forEach((key, value) {
+      if (value > topValue) {
+        topValue = value;
+        topKey = key;
+      }
+    });
+
+    if (topKey != null && topValue > 0) {
+      if (topKey == 'Calls') {
+        buffer.writeln(
+            '• Most people contact you via Calls. Make sure you answer promptly and consider adding business hours in your description.');
+      } else if (topKey == 'WhatsApp') {
+        buffer.writeln(
+            '• Most people contact you via WhatsApp. You can set up a short welcome message and quick replies to convert leads faster.');
+      } else if (topKey == 'Directions') {
+        buffer.writeln(
+            '• Many people open Directions. Consider adding parking info or landmarks in your description to make it easier to find you.');
+      } else if (topKey == 'Shares') {
+        buffer.writeln(
+            '• Your profile is shared often. Encourage happy clients to keep sharing your B-Hive profile with others.');
+      }
     }
 
     return buffer.toString();
@@ -364,7 +502,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
           child: SingleChildScrollView(
             child: Column(
               children: [
-                // Summary cards row
+                // Summary cards row (30 days)
                 Row(
                   children: [
                     Expanded(
@@ -385,10 +523,39 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: _StatCard(
-                        title: 'Conversion',
-                        value:
-                            '${(_conversionRate * 100).toStringAsFixed(1)}%',
+                        title: 'Conversion (30d)',
+                        value: '${(_conversionRate * 100).toStringAsFixed(1)}%',
                         subtitle: 'Actions / Views',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // Summary cards row (7 days)
+                Row(
+                  children: [
+                    Expanded(
+                      child: _StatCard(
+                        title: 'Views (7 days)',
+                        value: _viewsLast7.toString(),
+                        subtitle: 'Recent views',
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _StatCard(
+                        title: 'Actions (7 days)',
+                        value: _actionsLast7.toString(),
+                        subtitle: 'Recent actions',
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _StatCard(
+                        title: 'Conversion (7d)',
+                        value: '${(_conversionRate7 * 100).toStringAsFixed(1)}%',
+                        subtitle: 'Recent Actions / Views',
                       ),
                     ),
                   ],
@@ -482,19 +649,6 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
                   .toList(),
             ),
     );
-  }
-
-  int get _maxViewsInLast7 {
-    if (_last7DaysViews.isEmpty) return 0;
-    int max = 0;
-    for (final d in _last7DaysViews) {
-      if (d.views > max) max = d.views;
-    }
-    return max;
-  }
-
-  String _formatShortDate(DateTime d) {
-    return '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}';
   }
 
   Widget _buildInsightsCard() {

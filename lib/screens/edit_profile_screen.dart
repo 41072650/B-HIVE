@@ -8,9 +8,9 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../supabase_client.dart';
-import '../auth_gate.dart';
 import '../widgets/hive_background.dart';
 import 'connections_screen.dart'; // for navigating to connections
+import 'settings_screen.dart';   // settings screen
 
 class EditProfileScreen extends StatefulWidget {
   // Callback so LandingScreen can react when business mode changes
@@ -213,8 +213,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   Future<void> _pickNewAvatar() async {
     try {
-      final XFile? picked =
-          await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+      final XFile? picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 85,
+      );
 
       if (picked == null) return;
 
@@ -392,24 +394,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
-  Future<void> _logout() async {
-    try {
-      await supabase.auth.signOut();
-
-      if (!mounted) return;
-
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const AuthGate()),
-        (route) => false,
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to log out: $e')),
-      );
-    }
-  }
-
   Widget _buildAvatar() {
     Widget imageWidget;
 
@@ -468,6 +452,19 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           fontSize: 20,
           fontWeight: FontWeight.w600,
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Settings',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const SettingsScreen(),
+                ),
+              );
+            },
+          ),
+        ],
       ),
       body: HiveBackground(
         child: SafeArea(
@@ -717,7 +714,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           width: double.infinity,
                           child: OutlinedButton.icon(
                             onPressed: _inviteBusiness,
-                            icon: const Icon(Icons.person_add_alt_1_outlined),
+                            icon:
+                                const Icon(Icons.person_add_alt_1_outlined),
                             label: const Text('Invite a business'),
                           ),
                         ),
@@ -726,23 +724,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           width: double.infinity,
                           child: OutlinedButton.icon(
                             onPressed: _giveFeedback,
-                            icon: const Icon(Icons.feedback_outlined),
+                            icon:
+                                const Icon(Icons.feedback_outlined),
                             label: const Text('Give feedback'),
                           ),
                         ),
-                        const SizedBox(height: 8),
-                        SizedBox(
-                          width: double.infinity,
-                          child: OutlinedButton.icon(
-                            onPressed: _logout,
-                            icon: const Icon(Icons.logout),
-                            label: const Text('Logout'),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.redAccent,
-                              side: const BorderSide(color: Colors.redAccent),
-                            ),
-                          ),
-                        ),
+                        // 🔻 Logout button removed here – handled in Settings only
                       ],
                     ),
                   ),
