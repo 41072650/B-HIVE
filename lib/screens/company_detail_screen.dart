@@ -284,6 +284,9 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
     final ratingCount =
         (c['rating_count'] is num) ? c['rating_count'] as int : 0;
 
+    // NEW: pull logo_url for header avatar
+    final String logoUrl = (c['logo_url'] ?? '').toString();
+
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
@@ -315,10 +318,18 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                       // HEADER
                       Row(
                         children: [
-                          const CircleAvatar(
+                          CircleAvatar(
                             backgroundColor: Colors.white24,
-                            child:
-                                Icon(Icons.business, color: Colors.white),
+                            radius: 24,
+                            backgroundImage: logoUrl.isNotEmpty
+                                ? NetworkImage(logoUrl)
+                                : null,
+                            child: logoUrl.isEmpty
+                                ? const Icon(
+                                    Icons.business,
+                                    color: Colors.white,
+                                  )
+                                : null,
                           ),
                           const SizedBox(width: 12),
                           Expanded(
@@ -340,8 +351,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                                   Text(
                                     c['slogan'].toString(),
                                     style: const TextStyle(
-                                      fontStyle:
-                                          FontStyle.italic,
+                                      fontStyle: FontStyle.italic,
                                       color: Colors.white70,
                                     ),
                                   ),
@@ -371,8 +381,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                           if (ratingCount == 0)
                             const Text(
                               'No ratings yet',
-                              style:
-                                  TextStyle(color: Colors.white70),
+                              style: TextStyle(color: Colors.white70),
                             )
                           else
                             Row(
@@ -446,8 +455,8 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                             label: const Text('Call'),
                           ),
                           ElevatedButton.icon(
-                            onPressed: () => _whatsappCompany(
-                                c['phone']),
+                            onPressed: () =>
+                                _whatsappCompany(c['phone']),
                             icon: const FaIcon(
                                 FontAwesomeIcons.whatsapp),
                             label: const Text('WhatsApp'),
@@ -462,8 +471,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                             label: const Text('Directions'),
                           ),
                           ElevatedButton.icon(
-                            onPressed: () =>
-                                _shareCompany(c),
+                            onPressed: () => _shareCompany(c),
                             icon: const Icon(Icons.share),
                             label: const Text('Share'),
                           ),
@@ -486,8 +494,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                             context,
                             MaterialPageRoute(
                               builder: (_) =>
-                                  CompanyServicesScreen(
-                                      company: c),
+                                  CompanyServicesScreen(company: c),
                             ),
                           );
                         },
@@ -527,8 +534,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                             iconEnabledColor: Colors.white,
                             items: [1, 2, 3, 4, 5]
                                 .map(
-                                  (v) =>
-                                      DropdownMenuItem<double>(
+                                  (v) => DropdownMenuItem<double>(
                                     value: v.toDouble(),
                                     child: Text('$v ★'),
                                   ),

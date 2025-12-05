@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../supabase_client.dart';
 import '../widgets/hive_background.dart';
+import 'job_detail_screen.dart';
 
 class JobsScreen extends StatefulWidget {
   final bool isBusiness;
@@ -48,8 +49,9 @@ class _JobsScreenState extends State<JobsScreen> {
           List<Map<String, dynamic>>.from(jobsRes as List<dynamic>);
 
       // 2) Load ALL companies (id, owner_id, is_paid)
-      final companiesRes =
-          await supabase.from('companies').select('id, owner_id, is_paid');
+      final companiesRes = await supabase
+          .from('companies')
+          .select('id, owner_id, is_paid');
       final allCompanies =
           List<Map<String, dynamic>>.from(companiesRes as List<dynamic>);
 
@@ -128,14 +130,13 @@ class _JobsScreenState extends State<JobsScreen> {
     final user = supabase.auth.currentUser;
     if (user == null) return;
 
-    // Load companies and find the first owned by this user
-    final companiesRes =
-        await supabase.from('companies').select('id, owner_id');
-    final companies =
-        List<Map<String, dynamic>>.from(companiesRes as List<dynamic>);
-
+    // Load all companies owned by this user (also fetch name for the picker)
+    final companiesRes = await supabase
+        .from('companies')
+        .select('id, owner_id, name')
+        .eq('owner_id', user.id);
     final myCompanies =
-        companies.where((c) => c['owner_id'] == user.id).toList();
+        List<Map<String, dynamic>>.from(companiesRes as List<dynamic>);
 
     if (!mounted) return;
 
@@ -148,11 +149,75 @@ class _JobsScreenState extends State<JobsScreen> {
       return;
     }
 
-    final companyId = myCompanies.first['id'] as String;
+    // If only one company, just use it
+    String? chosenCompanyId;
+    if (myCompanies.length == 1) {
+      chosenCompanyId = myCompanies.first['id'] as String;
+    } else {
+      // Let the user choose which company via a bottom sheet
+      chosenCompanyId = await showModalBottomSheet<String>(
+        context: context,
+        backgroundColor: const Color(0xFF020617),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        builder: (ctx) {
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+                  child: Text(
+                    'Choose company',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Flexible(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: myCompanies.length,
+                    separatorBuilder: (_, __) => const Divider(
+                      height: 1,
+                      color: Colors.white24,
+                    ),
+                    itemBuilder: (context, index) {
+                      final company = myCompanies[index];
+                      final name =
+                          (company['name'] ?? 'Unnamed company').toString();
+                      return ListTile(
+                        title: Text(
+                          name,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        onTap: () {
+                          Navigator.of(context)
+                              .pop(company['id'] as String);
+                        },
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          );
+        },
+      );
+    }
+
+    // User cancelled the bottom sheet
+    if (chosenCompanyId == null) return;
 
     final result = await Navigator.of(context).pushNamed(
       '/post-job',
-      arguments: companyId,
+      arguments: chosenCompanyId,
     );
 
     if (result == true) {
@@ -172,10 +237,10 @@ class _JobsScreenState extends State<JobsScreen> {
             children: [
               const SizedBox(height: 12),
 
-              // Mode selector + Post button (top row)
+              // Mode selector (Find / My)
               Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 4),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                 child: Row(
                   children: [
                     _ModeChip(
@@ -189,13 +254,6 @@ class _JobsScreenState extends State<JobsScreen> {
                         label: 'My Jobs',
                         selected: _mode == 'my',
                         onTap: () => _changeMode('my'),
-                      ),
-                    const Spacer(),
-                    if (widget.isBusiness)
-                      IconButton(
-                        onPressed: _goToPostJob,
-                        icon: const Icon(Icons.add),
-                        tooltip: 'Post a Job',
                       ),
                   ],
                 ),
@@ -237,14 +295,14 @@ class _JobsScreenState extends State<JobsScreen> {
               Expanded(
                 child: _loading
                     ? ListView(
-                        physics:
-                            const AlwaysScrollableScrollPhysics(),
+                        physics: const AlwaysScrollableScrollPhysics(),
                         children: const [
                           SizedBox(
                             height: 200,
                             child: Center(
                               child: CircularProgressIndicator(
-                                  color: Colors.white),
+                                color: Colors.white,
+                              ),
                             ),
                           ),
                         ],
@@ -260,7 +318,8 @@ class _JobsScreenState extends State<JobsScreen> {
                                   child: Text(
                                     _error!,
                                     style: const TextStyle(
-                                        color: Colors.redAccent),
+                                      color: Colors.redAccent,
+                                    ),
                                   ),
                                 ),
                               ),
@@ -279,7 +338,8 @@ class _JobsScreenState extends State<JobsScreen> {
                                             ? 'You have no job listings yet.'
                                             : 'No jobs found.',
                                         style: const TextStyle(
-                                            color: Colors.white70),
+                                          color: Colors.white70,
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -288,8 +348,7 @@ class _JobsScreenState extends State<JobsScreen> {
                             : ListView.builder(
                                 physics:
                                     const AlwaysScrollableScrollPhysics(),
-                                padding:
-                                    const EdgeInsets.only(top: 8),
+                                padding: const EdgeInsets.only(top: 8),
                                 itemCount: _jobs.length,
                                 itemBuilder: (context, index) {
                                   final job = _jobs[index];
@@ -330,7 +389,8 @@ class _ModeChip extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
           color: selected ? gold : Colors.transparent,
           borderRadius: BorderRadius.circular(20),
@@ -425,7 +485,12 @@ class _JobCard extends StatelessWidget {
           ],
         ),
         onTap: () {
-          // TODO: Job detail screen later
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => JobDetailScreen(job: job),
+            ),
+          );
         },
       ),
     );
