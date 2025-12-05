@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import '../supabase_client.dart';
 import 'company_detail_screen.dart';
 import '../widgets/hive_background.dart';
+import '../Constants/category_map.dart'; // must contain: const Map<String, List<String>> kCategoryMap = {...};
 
 enum CompanySort { newest, rating, name, closest }
 
@@ -22,6 +23,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
   String _searchQuery = "";
   String _selectedCategoryFilter = 'All';
+  String? _selectedSubcategory; // null = "All subcategories"
   CompanySort _sortBy = CompanySort.newest;
 
   double? _userLat;
@@ -52,16 +54,37 @@ class CompanyListScreenState extends State<CompanyListScreen> {
     });
   }
 
-  // Build list of categories present in data + "All"
+  // ─────────────── CATEGORY + SUBCATEGORY OPTIONS ───────────────
+
+  /// Categories come from kCategoryMap so they are stable.
   List<String> get _categoryOptions {
-    final set = <String>{};
-    for (final c in _companies) {
-      final cat = (c['category'] ?? '').toString();
-      if (cat.isNotEmpty) set.add(cat);
+    final keys = kCategorySubcategories.keys.toList();
+
+    // Make sure "All" is first if it's present in the map
+    keys.sort((a, b) {
+      if (a == 'All') return -1;
+      if (b == 'All') return 1;
+      return a.compareTo(b);
+    });
+
+    // If the dev forgot to put "All" in the map, ensure it exists.
+    if (!keys.contains('All')) {
+      keys.insert(0, 'All');
     }
-    final list = set.toList()..sort();
-    return ['All', ...list];
+
+    return keys;
   }
+
+  /// Subcategories are read from kCategoryMap for the selected category.
+  /// We *don't* add "All" here; we handle that as the first chip ourselves.
+  List<String> get _availableSubcategories {
+    if (_selectedCategoryFilter == 'All') {
+      return const <String>[];
+    }
+    return kCategorySubcategories[_selectedCategoryFilter] ?? const <String>[];
+  }
+
+  // ─────────────── HELPERS ───────────────
 
   DateTime _parseDate(dynamic v) {
     if (v == null) {
@@ -138,27 +161,36 @@ class CompanyListScreenState extends State<CompanyListScreen> {
     }
   }
 
+  // ─────────────── FILTER + SORT ───────────────
+
   List<dynamic> get _filteredCompanies {
     final query = _searchQuery.trim().toLowerCase();
 
-    // 1) Filter by search and category
     final filtered = _companies.where((company) {
       final name = (company['name'] ?? '').toString().toLowerCase();
-      final category = (company['category'] ?? '').toString().toLowerCase();
+      final category = (company['category'] ?? '').toString();
+      final categoryLower = category.toLowerCase();
       final city = (company['city'] ?? '').toString().toLowerCase();
+      final subcategory = (company['subcategory'] ?? '').toString();
+      final subLower = subcategory.toLowerCase();
 
       final matchesSearch = query.isEmpty ||
           name.contains(query) ||
-          category.contains(query) ||
-          city.contains(query);
+          categoryLower.contains(query) ||
+          city.contains(query) ||
+          subLower.contains(query);
 
-      final matchesCategory = _selectedCategoryFilter == 'All' ||
-          (company['category'] ?? '') == _selectedCategoryFilter;
+      final matchesCategory =
+          _selectedCategoryFilter == 'All' ||
+          category == _selectedCategoryFilter;
 
-      return matchesSearch && matchesCategory;
+      final matchesSubcategory = _selectedSubcategory == null ||
+          subcategory == _selectedSubcategory;
+
+      return matchesSearch && matchesCategory && matchesSubcategory;
     }).toList();
 
-    // 2) Sort
+    // Sort
     filtered.sort((a, b) {
       switch (_sortBy) {
         case CompanySort.newest:
@@ -167,8 +199,8 @@ class CompanyListScreenState extends State<CompanyListScreen> {
           return db.compareTo(da); // newest first
 
         case CompanySort.rating:
-          final ra = (a['rating_avg'] ?? 0).toDouble();
-          final rb = (b['rating_avg'] ?? 0).toDouble();
+          final ra = (a['rating_avg'] as num? ?? 0).toDouble();
+          final rb = (b['rating_avg'] as num? ?? 0).toDouble();
           return rb.compareTo(ra); // highest rating first
 
         case CompanySort.name:
@@ -180,8 +212,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
           final userLat = _userLat;
           final userLon = _userLon;
           if (userLat == null || userLon == null) {
-            // No user location, keep current order
-            return 0;
+            return 0; // no location → keep order
           }
 
           final la = (a['latitude'] as num?)?.toDouble();
@@ -189,7 +220,6 @@ class CompanyListScreenState extends State<CompanyListScreen> {
           final lb = (b['latitude'] as num?)?.toDouble();
           final lob = (b['longitude'] as num?)?.toDouble();
 
-          // If any company does not have coordinates, don't reorder
           if (la == null || loa == null || lb == null || lob == null) {
             return 0;
           }
@@ -202,6 +232,8 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
     return filtered;
   }
+
+  // ─────────────── UI BUILD ───────────────
 
   @override
   Widget build(BuildContext context) {
@@ -222,7 +254,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
       body: HiveBackground(
         child: Column(
           children: [
-            const SizedBox(height: 70), // space under AppBar
+            const SizedBox(height: 70),
 
             // 🔍 SEARCH BAR
             Padding(
@@ -253,109 +285,20 @@ class CompanyListScreenState extends State<CompanyListScreen> {
               ),
             ),
 
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
 
-            // 🏷 CATEGORY + SORT ROW
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  // Category filter
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _selectedCategoryFilter,
-                      decoration: InputDecoration(
-                        labelText: 'Category',
-                        labelStyle:
-                            const TextStyle(color: Colors.white70, fontSize: 12),
-                        filled: true,
-                        fillColor: Colors.black.withOpacity(0.4),
-                        enabledBorder: OutlineInputBorder(
-                          borderSide: const BorderSide(color: Colors.white24),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderSide: const BorderSide(color: Colors.white70),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      dropdownColor: const Color(0xFF020617),
-                      style: const TextStyle(color: Colors.white),
-                      items: _categoryOptions
-                          .map(
-                            (cat) => DropdownMenuItem<String>(
-                              value: cat,
-                              child: Text(cat),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: (value) {
-                        if (value == null) return;
-                        setState(() {
-                          _selectedCategoryFilter = value;
-                        });
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  // Sort dropdown
-                  Expanded(
-                    child: DropdownButtonFormField<CompanySort>(
-                      value: _sortBy,
-                      decoration: InputDecoration(
-                        labelText: 'Sort by',
-                        labelStyle:
-                            const TextStyle(color: Colors.white70, fontSize: 12),
-                        filled: true,
-                        fillColor: Colors.black.withOpacity(0.4),
-                        enabledBorder: OutlineInputBorder(
-                          borderSide: const BorderSide(color: Colors.white24),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderSide: const BorderSide(color: Colors.white70),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      dropdownColor: const Color(0xFF020617),
-                      style: const TextStyle(color: Colors.white),
-                      items: const [
-                        DropdownMenuItem(
-                          value: CompanySort.newest,
-                          child: Text('Newest'),
-                        ),
-                        DropdownMenuItem(
-                          value: CompanySort.rating,
-                          child: Text('Top rated'),
-                        ),
-                        DropdownMenuItem(
-                          value: CompanySort.name,
-                          child: Text('A–Z'),
-                        ),
-                        DropdownMenuItem(
-                          value: CompanySort.closest,
-                          child: Text('Closest'),
-                        ),
-                      ],
-                      onChanged: (value) async {
-                        if (value == null) return;
+            // 🏷 CATEGORY CHIPS
+            _buildCategoryBar(),
 
-                        if (value == CompanySort.closest &&
-                            (_userLat == null || _userLon == null)) {
-                          await _ensureLocation();
-                        }
+            // 🔽 SUB-CATEGORY CHIPS
+            _buildSubcategoryBar(),
 
-                        setState(() {
-                          _sortBy = value;
-                        });
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            const SizedBox(height: 8),
 
-            const SizedBox(height: 10),
+            // ↕️ SORT ROW
+            _buildSortRow(),
+
+            const SizedBox(height: 8),
 
             // LIST
             Expanded(
@@ -377,11 +320,10 @@ class CompanyListScreenState extends State<CompanyListScreen> {
                             final company = _filteredCompanies[index]
                                 as Map<String, dynamic>;
                             final ratingAvg =
-                                (company['rating_avg'] ?? 0).toDouble();
+                                (company['rating_avg'] as num? ?? 0).toDouble();
                             final ratingCount =
-                                (company['rating_count'] ?? 0) as int;
+                                (company['rating_count'] as int? ?? 0);
 
-                            // 🧭 Compute distance if we have user + company coordinates
                             double? distanceKm;
                             if (_userLat != null &&
                                 _userLon != null &&
@@ -395,9 +337,14 @@ class CompanyListScreenState extends State<CompanyListScreen> {
                                   _distanceKm(_userLat!, _userLon!, lat, lon);
                             }
 
-                            // 📝 Build subtitle text
                             String subtitleText =
                                 '${company['category'] ?? ''} • ${company['city'] ?? ''}';
+                            if ((company['subcategory'] ?? '')
+                                .toString()
+                                .isNotEmpty) {
+                              subtitleText =
+                                  '${company['subcategory']} • $subtitleText';
+                            }
                             if (distanceKm != null) {
                               subtitleText +=
                                   ' • ${distanceKm.toStringAsFixed(1)} km away';
@@ -406,7 +353,8 @@ class CompanyListScreenState extends State<CompanyListScreen> {
                             return ListTile(
                               leading: const CircleAvatar(
                                 backgroundColor: Colors.white24,
-                                child: Icon(Icons.business, color: Colors.white),
+                                child:
+                                    Icon(Icons.business, color: Colors.white),
                               ),
                               title: Text(
                                 company['name'] ?? '',
@@ -457,6 +405,154 @@ class CompanyListScreenState extends State<CompanyListScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  // ─────────────── HELPER UI WIDGETS ───────────────
+
+  Widget _buildCategoryBar() {
+    final categories = _categoryOptions;
+
+    return SizedBox(
+      height: 42,
+      child: ListView.separated(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        scrollDirection: Axis.horizontal,
+        itemCount: categories.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final cat = categories[index];
+          final selected = _selectedCategoryFilter == cat;
+
+          return ChoiceChip(
+            label: Text(cat),
+            selected: selected,
+            onSelected: (_) {
+              setState(() {
+                _selectedCategoryFilter = cat;
+                _selectedSubcategory = null; // reset subcategory
+              });
+            },
+            labelStyle: TextStyle(
+              color: selected ? Colors.black : Colors.white,
+              fontSize: 13,
+            ),
+            selectedColor: const Color.fromARGB(255, 241, 178, 70),
+            backgroundColor: Colors.black.withOpacity(0.6),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+              side: BorderSide(
+                color: selected ? Colors.amber : Colors.white24,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSubcategoryBar() {
+    final subs = _availableSubcategories;
+    if (subs.isEmpty) return const SizedBox.shrink();
+
+    return SizedBox(
+      height: 38,
+      child: ListView.separated(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+        scrollDirection: Axis.horizontal,
+        itemCount: subs.length + 1, // + "All"
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          String label;
+          String? value;
+          if (index == 0) {
+            label = 'All';
+            value = null;
+          } else {
+            label = subs[index - 1];
+            value = label;
+          }
+
+          final selected =
+              _selectedSubcategory == value ||
+              (value == null && _selectedSubcategory == null);
+
+          return ChoiceChip(
+            label: Text(label),
+            selected: selected,
+            onSelected: (_) {
+              setState(() {
+                _selectedSubcategory = value;
+              });
+            },
+            labelStyle: TextStyle(
+              color: selected ? Colors.black : Colors.white,
+              fontSize: 12,
+            ),
+            selectedColor: Colors.amber,
+            backgroundColor: Colors.black.withOpacity(0.5),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(
+                color: selected ? Colors.amber : Colors.white24,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSortRow() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          const Text(
+            'Sort by',
+            style: TextStyle(color: Colors.white70, fontSize: 12),
+          ),
+          const SizedBox(width: 8),
+          DropdownButton<CompanySort>(
+            value: _sortBy,
+            dropdownColor: const Color(0xFF020617),
+            iconEnabledColor: Colors.white,
+            underline: const SizedBox.shrink(),
+            style: const TextStyle(color: Colors.white),
+            items: const [
+              DropdownMenuItem(
+                value: CompanySort.newest,
+                child: Text('Newest'),
+              ),
+              DropdownMenuItem(
+                value: CompanySort.rating,
+                child: Text('Top rated'),
+              ),
+              DropdownMenuItem(
+                value: CompanySort.name,
+                child: Text('A–Z'),
+              ),
+              DropdownMenuItem(
+                value: CompanySort.closest,
+                child: Text('Closest'),
+              ),
+            ],
+            onChanged: (value) async {
+              if (value == null) return;
+
+              if (value == CompanySort.closest &&
+                  (_userLat == null || _userLon == null)) {
+                await _ensureLocation();
+              }
+
+              setState(() {
+                _sortBy = value;
+              });
+            },
+          ),
+        ],
       ),
     );
   }
