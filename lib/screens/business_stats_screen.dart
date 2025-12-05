@@ -1,5 +1,7 @@
 // lib/screens/business_stats_screen.dart
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import '../widgets/hive_background.dart';
 import '../supabase_client.dart';
 
@@ -17,7 +19,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
   List<Map<String, dynamic>> _companies = [];
   Map<String, dynamic>? _selectedCompany;
 
-  // Stats
+  // Core stats
   int _viewsLast30 = 0;
   int _actionsLast30 = 0;
   Map<String, int> _eventCounts = {};
@@ -25,6 +27,16 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
 
   // Leads (built from company_events + profiles)
   List<_LeadEvent> _leads = [];
+
+  // Peak activity (hours of day, across last 30 days)
+  List<_HourBucket> _topHours = [];
+
+  // Competitor benchmarking
+  double? _peerAvgViews;
+  double? _peerAvgConversion; // actions / views
+  double? _viewsPercentile; // 0–100
+  double? _conversionPercentile; // 0–100
+  int _peerCount = 0;
 
   @override
   void initState() {
@@ -82,6 +94,76 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     }
   }
 
+  /// Open Paystack subscription for the currently selected company
+  Future<void> _openSubscriptionPage() async {
+    if (_selectedCompany == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select a company first.'),
+        ),
+      );
+      return;
+    }
+
+    final companyId = _selectedCompany!['id']?.toString();
+    if (companyId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Invalid company selected.'),
+        ),
+      );
+      return;
+    }
+
+    // Must be logged in and have an email
+    final user = supabase.auth.currentUser;
+    if (user == null || user.email == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You must be logged in to manage a subscription.'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final response = await supabase.functions.invoke(
+        'create-paystack-link',
+        body: {
+          'companyId': companyId,
+          'userEmail': user.email,
+        },
+      );
+
+      final data = response.data as Map<String, dynamic>?;
+      final url = data?['authorization_url'] as String?;
+
+      if (url == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not get subscription link from server.'),
+          ),
+        );
+        return;
+      }
+
+      final uri = Uri.parse(url);
+      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open subscription page.'),
+          ),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error opening subscription: $e'),
+        ),
+      );
+    }
+  }
+
   Future<void> _loadStatsForCompany(String companyId) async {
     setState(() {
       _loading = true;
@@ -91,6 +173,12 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       _eventCounts = {};
       _last7DaysViews = [];
       _leads = [];
+      _topHours = [];
+      _peerAvgViews = null;
+      _peerAvgConversion = null;
+      _viewsPercentile = null;
+      _conversionPercentile = null;
+      _peerCount = 0;
     });
 
     try {
@@ -103,7 +191,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       // ---- 1) Get aggregated daily stats (company_daily_stats) ----
       final dailyStats = await supabase
           .from('company_daily_stats')
-          .select('date, views, calls, directions')
+          .select('date, views, calls, directions, company_id')
           .eq('company_id', companyId)
           .gte('date', from30Str)
           .order('date');
@@ -152,10 +240,14 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
 
       List<Map<String, dynamic>> events = [];
       if (eventsRes is List) {
-        events = eventsRes.map<Map<String, dynamic>>(
-          (e) => Map<String, dynamic>.from(e as Map),
-        ).toList();
+        events = eventsRes
+            .map<Map<String, dynamic>>(
+              (e) => Map<String, dynamic>.from(e as Map),
+            )
+            .toList();
 
+        // Build counts + hourly buckets + whatsapp/share counts
+        final Map<int, int> hourlyCounts = {};
         for (final map in events) {
           final type = (map['event_type'] ?? '').toString();
 
@@ -164,7 +256,28 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
           } else if (type == 'share') {
             shareCount++;
           }
+
+          final createdAtStr = map['created_at']?.toString();
+          DateTime createdAt;
+          try {
+            createdAt =
+                DateTime.parse(createdAtStr ?? DateTime.now().toIso8601String())
+                    .toLocal();
+          } catch (_) {
+            createdAt = DateTime.now();
+          }
+          final hour = createdAt.hour;
+          hourlyCounts[hour] = (hourlyCounts[hour] ?? 0) + 1;
         }
+
+        // Build top peak hours (up to 3)
+        final sortedHours = hourlyCounts.entries.toList()
+          ..sort((a, b) => b.value.compareTo(a.value));
+        final top = <_HourBucket>[];
+        for (var i = 0; i < sortedHours.length && i < 3; i++) {
+          top.add(_HourBucket(hour: sortedHours[i].key, count: sortedHours[i].value));
+        }
+        _topHours = top;
       }
 
       // ---- 3) Build last 7 days series from aggregated views ----
@@ -195,6 +308,16 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       // ---- 5) Build leads from events (lookup profile names) ----
       final leads = await _buildLeadsFromEvents(events);
 
+      // ---- 6) Competitor benchmarking (category-based) ----
+      final category = _selectedCompany?['category']?.toString();
+      await _loadBenchmarksForCompany(
+        companyId: companyId,
+        category: category,
+        from30: from30DateOnly,
+        myViews: totalViews,
+        myActions: actionsTotal,
+      );
+
       setState(() {
         _loading = false;
         _viewsLast30 = totalViews;
@@ -202,12 +325,158 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         _eventCounts = counts;
         _last7DaysViews = last7;
         _leads = leads;
+        // _topHours & benchmark fields already updated above
       });
     } catch (e) {
       setState(() {
         _loading = false;
         _error = 'Error loading stats: $e';
       });
+    }
+  }
+
+  Future<void> _loadBenchmarksForCompany({
+    required String companyId,
+    required String? category,
+    required DateTime from30,
+    required int myViews,
+    required int myActions,
+  }) async {
+    try {
+      if (category == null || category.isEmpty) {
+        setState(() {
+          _peerCount = 0;
+          _peerAvgViews = null;
+          _peerAvgConversion = null;
+          _viewsPercentile = null;
+          _conversionPercentile = null;
+        });
+        return;
+      }
+
+      // 1) Find peer companies in same category
+      final peersRes = await supabase
+          .from('companies')
+          .select('id')
+          .eq('category', category);
+
+      if (peersRes is! List || peersRes.isEmpty) {
+        setState(() {
+          _peerCount = 0;
+          _peerAvgViews = null;
+          _peerAvgConversion = null;
+          _viewsPercentile = null;
+          _conversionPercentile = null;
+        });
+        return;
+      }
+
+      final peerIds = <String>[];
+      for (final row in peersRes) {
+        final map = row as Map<String, dynamic>;
+        final id = map['id']?.toString();
+        if (id != null && id.isNotEmpty) {
+          peerIds.add(id);
+        }
+      }
+
+      if (peerIds.length < 3) {
+        // Not enough peers to make a meaningful percentile
+        setState(() {
+          _peerCount = peerIds.length;
+          _peerAvgViews = null;
+          _peerAvgConversion = null;
+          _viewsPercentile = null;
+          _conversionPercentile = null;
+        });
+        return;
+      }
+
+      // 2) Load 30-day stats for all peers
+      final statsRes = await supabase
+          .from('company_daily_stats')
+          .select('company_id, views, calls, directions, date')
+          .gte('date', from30.toIso8601String())
+          .filter('company_id', 'in', peerIds.toList());
+
+      if (statsRes is! List) {
+        return;
+      }
+
+      // Aggregate per company
+      final Map<String, _CompanyAgg> aggByCompany = {};
+      for (final row in statsRes) {
+        final map = row as Map<String, dynamic>;
+        final cid = map['company_id']?.toString();
+        if (cid == null) continue;
+
+        final views = (map['views'] is num) ? (map['views'] as num).toInt() : 0;
+        final calls = (map['calls'] is num) ? (map['calls'] as num).toInt() : 0;
+        final directions =
+            (map['directions'] is num) ? (map['directions'] as num).toInt() : 0;
+
+        final agg = aggByCompany.putIfAbsent(cid, () => _CompanyAgg());
+        agg.views += views;
+        agg.actions += calls + directions; // only "hard" actions
+      }
+
+      if (aggByCompany.isEmpty) {
+        setState(() {
+          _peerCount = 0;
+          _peerAvgViews = null;
+          _peerAvgConversion = null;
+          _viewsPercentile = null;
+          _conversionPercentile = null;
+        });
+        return;
+      }
+
+      final peerViewsList = <double>[];
+      final peerConvList = <double>[];
+
+      double sumViews = 0;
+      double sumConv = 0;
+
+      for (final entry in aggByCompany.entries) {
+        final v = entry.value.views.toDouble();
+        final a = entry.value.actions.toDouble();
+        final conv = v == 0 ? 0.0 : a / v;
+
+        sumViews += v;
+        sumConv += conv;
+
+        peerViewsList.add(v);
+        peerConvList.add(conv);
+      }
+
+      final myViewsDouble = myViews.toDouble();
+      final myConv = myViews == 0 ? 0.0 : myActions / myViewsDouble;
+
+      // Percentile: share of peers with <= my metric
+      int viewsBetterOrEqual = 0;
+      int convBetterOrEqual = 0;
+      for (int i = 0; i < peerViewsList.length; i++) {
+        if (peerViewsList[i] <= myViewsDouble) {
+          viewsBetterOrEqual++;
+        }
+        if (peerConvList[i] <= myConv) {
+          convBetterOrEqual++;
+        }
+      }
+
+      final peerCount = peerViewsList.length;
+      final avgViews = sumViews / peerCount;
+      final avgConv = sumConv / peerCount;
+
+      setState(() {
+        _peerCount = peerCount;
+        _peerAvgViews = avgViews;
+        _peerAvgConversion = avgConv;
+        _viewsPercentile = (viewsBetterOrEqual / peerCount) * 100.0;
+        _conversionPercentile = (convBetterOrEqual / peerCount) * 100.0;
+      });
+    } catch (_) {
+      // If anything fails, silently skip benchmark (we don't want to break stats)
     }
   }
 
@@ -250,13 +519,18 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       final createdAtStr = ev['created_at']?.toString();
       DateTime createdAt;
       try {
-        createdAt = DateTime.parse(createdAtStr ?? DateTime.now().toIso8601String());
+        createdAt =
+            DateTime.parse(createdAtStr ?? DateTime.now().toIso8601String())
+                .toLocal();
       } catch (_) {
         createdAt = DateTime.now();
       }
 
       final uid = ev['user_id']?.toString();
-      final userName = uid != null ? (nameByUserId[uid] ?? 'Someone on B-Hive') : null;
+      final userName =
+          uid != null ? (nameByUserId[uid] ?? 'Someone on B-Hive') : null;
+
+      final quality = _computeLeadQuality(type);
 
       leads.add(
         _LeadEvent(
@@ -264,6 +538,8 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
           eventType: type,
           actionLabel: _mapEventTypeToLabel(type),
           createdAt: createdAt,
+          qualityScore: quality.score,
+          qualityLabel: quality.label,
         ),
       );
     }
@@ -274,6 +550,28 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
   double get _conversionRate {
     if (_viewsLast30 == 0) return 0;
     return _actionsLast30 / _viewsLast30;
+  }
+
+  _LeadQuality _computeLeadQuality(String type) {
+    // Simple scoring model:
+    // view = 1 (low), share/directions = 2 (medium), call/whatsapp = 3 (high)
+    switch (type) {
+      case 'call':
+      case 'whatsapp':
+        return _LeadQuality(score: 3, label: 'High intent');
+      case 'directions':
+      case 'share':
+        return _LeadQuality(score: 2, label: 'Interested');
+      case 'view':
+      default:
+        return _LeadQuality(score: 1, label: 'Browsing');
+    }
+  }
+
+  Color _qualityColor(int score) {
+    if (score >= 3) return Colors.greenAccent;
+    if (score == 2) return Colors.orangeAccent;
+    return Colors.white38;
   }
 
   String _mapEventTypeToLabel(String type) {
@@ -303,6 +601,14 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     final time =
         '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
     return '$date  •  $time';
+  }
+
+  String _formatHourRange(int hour) {
+    final start = hour % 24;
+    final end = (hour + 1) % 24;
+    final startStr = '${start.toString().padLeft(2, '0')}:00';
+    final endStr = '${end.toString().padLeft(2, '0')}:00';
+    return '$startStr – $endStr';
   }
 
   String _buildInsightsText() {
@@ -342,7 +648,8 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       buffer.writeln('• You received $whatsapp WhatsApp tap(s).');
     }
     if (directions > 0) {
-      buffer.writeln('• Directions to your business were opened $directions time(s).');
+      buffer.writeln(
+          '• Directions to your business were opened $directions time(s).');
     }
     if (shares > 0) {
       buffer.writeln('• Your profile was shared $shares time(s).');
@@ -358,28 +665,21 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final bg = HiveBackground(
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 800),
-              child: _buildContent(),
+    return Scaffold(
+      // No AppBar – matches other main tabs
+      body: HiveBackground(
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 800),
+                child: _buildContent(),
+              ),
             ),
           ),
         ),
       ),
-    );
-
-    return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text('Business Stats'),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-      ),
-      body: bg,
     );
   }
 
@@ -412,11 +712,12 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
 
     final selected = _selectedCompany!;
     final name = selected['name']?.toString() ?? 'Your business';
+    final isPaid = selected['is_paid'] == true;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Company selector
+        // Company selector row
         Row(
           children: [
             Expanded(
@@ -463,60 +764,244 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         ),
         const SizedBox(height: 12),
 
+        // Subscription status banner
+        _buildSubscriptionBanner(isPaid),
+        const SizedBox(height: 12),
+
         Expanded(
           child: SingleChildScrollView(
             child: Column(
-              children: [
-                // Summary cards row
-                Row(
-                  children: [
-                    Expanded(
-                      child: _StatCard(
-                        title: 'Views (30 days)',
-                        value: _viewsLast30.toString(),
-                        subtitle: 'Profile views',
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _StatCard(
-                        title: 'Actions (30 days)',
-                        value: _actionsLast30.toString(),
-                        subtitle: 'Calls, WhatsApp,\nDirections, Shares',
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _StatCard(
-                        title: 'Conversion',
-                        value:
-                            '${(_conversionRate * 100).toStringAsFixed(1)}%',
-                        subtitle: 'Actions / Views',
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-
-                // Actions breakdown
-                _buildActionsBreakdownCard(),
-                const SizedBox(height: 16),
-
-                // Views over last 7 days
-                _buildViewsHistoryCard(),
-                const SizedBox(height: 16),
-
-                // Insights
-                _buildInsightsCard(),
-                const SizedBox(height: 16),
-
-                // 💥 NEW: Leads timeline (dashboard style)
-                _buildLeadsCard(),
-              ],
+              children:
+                  isPaid ? _buildPaidDashboard() : _buildFreeDashboard(),
             ),
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildSubscriptionBanner(bool isPaid) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.7),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isPaid ? Colors.greenAccent : Colors.amberAccent,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                isPaid
+                    ? 'BHive Business — Verified'
+                    : 'BHive Business — Free plan',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              if (isPaid)
+                const Icon(
+                  Icons.verified,
+                  size: 18,
+                  color: Colors.greenAccent,
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            isPaid
+                ? 'You have full access to your analytics dashboard and leads.'
+                : 'You can see a basic view count. Upgrade to unlock full analytics, conversion stats and leads.',
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: _openSubscriptionPage,
+              child: Text(
+                isPaid ? 'Manage Subscription' : 'Upgrade to unlock full stats',
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Widgets shown when the company IS on a paid plan
+  List<Widget> _buildPaidDashboard() {
+    return [
+      // Summary cards row
+      Row(
+        children: [
+          Expanded(
+            child: _StatCard(
+              title: 'Views (30 days)',
+              value: _viewsLast30.toString(),
+              subtitle: 'Profile views',
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _StatCard(
+              title: 'Actions (30 days)',
+              value: _actionsLast30.toString(),
+              subtitle: 'Calls, WhatsApp,\nDirections, Shares',
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _StatCard(
+              title: 'Conversion',
+              value: '${(_conversionRate * 100).toStringAsFixed(1)}%',
+              subtitle: 'Actions / Views',
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 16),
+
+      // Conversion funnel
+      _buildFunnelCard(),
+      const SizedBox(height: 16),
+
+      // Actions breakdown
+      _buildActionsBreakdownCard(),
+      const SizedBox(height: 16),
+
+      // Views over last 7 days
+      _buildViewsHistoryCard(),
+      const SizedBox(height: 16),
+
+      // Peak activity times
+      _buildPeakTimesCard(),
+      const SizedBox(height: 16),
+
+      // Insights
+      _buildInsightsCard(),
+      const SizedBox(height: 16),
+
+      // Competitor benchmark
+      _buildBenchmarkCard(),
+      const SizedBox(height: 16),
+
+      // Leads timeline
+      _buildLeadsCard(context),
+      const SizedBox(height: 16),
+    ];
+  }
+
+  // Widgets shown when the company is on the FREE plan
+  List<Widget> _buildFreeDashboard() {
+    return [
+      // Only one basic stat
+      Row(
+        children: [
+          Expanded(
+            child: _StatCard(
+              title: 'Views (30 days)',
+              value: _viewsLast30.toString(),
+              subtitle: 'Basic teaser analytics',
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 16),
+      _buildUpgradeTeaserCard(),
+      const SizedBox(height: 16),
+    ];
+  }
+
+  Widget _buildUpgradeTeaserCard() {
+    return _CardContainer(
+      title: 'Unlock your full analytics',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: const [
+          Text(
+            'Upgrade your business to a verified BHive subscription to see:',
+            style: TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          SizedBox(height: 8),
+          Text(
+            '• Conversion funnel from views to actions\n'
+            '• Detailed actions breakdown (calls, WhatsApp, directions, shares)\n'
+            '• Views history for the last 7 days\n'
+            '• Peak times when customers are most active\n'
+            '• Category benchmark against similar businesses\n'
+            '• A timeline of recent leads with quality indicators',
+            style: TextStyle(color: Colors.white70, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFunnelCard() {
+    final views = _viewsLast30;
+    final calls = _eventCounts['call'] ?? 0;
+    final whatsapp = _eventCounts['whatsapp'] ?? 0;
+    final directions = _eventCounts['directions'] ?? 0;
+    final shares = _eventCounts['share'] ?? 0;
+
+    final actionsTotal = _actionsLast30;
+    final contactClicks = calls + whatsapp;
+    final visitIntent = directions;
+
+    double _rate(int top, int bottom) {
+      if (bottom == 0) return 0;
+      return (top / bottom) * 100.0;
+    }
+
+    return _CardContainer(
+      title: 'Conversion funnel (last 30 days)',
+      child: Column(
+        children: [
+          _FunnelRow(
+            label: 'Views',
+            value: views,
+            base: views,
+            percentOfPrevious: 100,
+          ),
+          const SizedBox(height: 8),
+          _FunnelRow(
+            label: 'Any action',
+            value: actionsTotal,
+            base: views,
+            percentOfPrevious: _rate(actionsTotal, views),
+          ),
+          const SizedBox(height: 8),
+          _FunnelRow(
+            label: 'Contact clicks (Call + WhatsApp)',
+            value: contactClicks,
+            base: actionsTotal == 0 ? views : actionsTotal,
+            percentOfPrevious: actionsTotal == 0
+                ? _rate(contactClicks, views)
+                : _rate(contactClicks, actionsTotal),
+          ),
+          const SizedBox(height: 8),
+          _FunnelRow(
+            label: 'Directions opened',
+            value: visitIntent,
+            base: contactClicks == 0 ? views : contactClicks,
+            percentOfPrevious: contactClicks == 0
+                ? _rate(visitIntent, views)
+                : _rate(visitIntent, contactClicks),
+          ),
+        ],
+      ),
     );
   }
 
@@ -527,7 +1012,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     final shares = _eventCounts['share'] ?? 0;
 
     return _CardContainer(
-      title: 'Actions Breakdown (30 days)',
+      title: 'Actions breakdown (30 days)',
       child: Column(
         children: [
           _ActionRow(label: 'Calls', value: calls),
@@ -600,6 +1085,68 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     return max;
   }
 
+  Widget _buildPeakTimesCard() {
+    return _CardContainer(
+      title: 'Peak activity times (last 30 days)',
+      child: _topHours.isEmpty
+          ? const Text(
+              'We don’t have enough data yet to detect peak times.\n\n'
+              'As more people view and interact with your profile, we’ll show you when they are most active.',
+              style: TextStyle(color: Colors.white70, fontSize: 12),
+            )
+          : Column(
+              children: _topHours
+                  .map(
+                    (bucket) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 130,
+                            child: Text(
+                              _formatHourRange(bucket.hour),
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: LinearProgressIndicator(
+                              value: _maxTopHourCount == 0
+                                  ? 0
+                                  : bucket.count / _maxTopHourCount,
+                              minHeight: 6,
+                              backgroundColor: Colors.white12,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '${bucket.count}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+    );
+  }
+
+  int get _maxTopHourCount {
+    if (_topHours.isEmpty) return 0;
+    int max = 0;
+    for (final h in _topHours) {
+      if (h.count > max) max = h.count;
+    }
+    return max;
+  }
+
   Widget _buildInsightsCard() {
     return _CardContainer(
       title: 'Insights',
@@ -610,68 +1157,192 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     );
   }
 
-  Widget _buildLeadsCard() {
+  Widget _buildBenchmarkCard() {
+    if (_peerCount < 3 ||
+        _peerAvgViews == null ||
+        _peerAvgConversion == null ||
+        _viewsPercentile == null ||
+        _conversionPercentile == null) {
+      return _CardContainer(
+        title: 'Category benchmark',
+        child: const Text(
+          'We will show how you compare to other businesses in your category once there is enough data.\n\n'
+          'As more businesses in your category receive views and actions, this section will unlock automatically.',
+          style: TextStyle(color: Colors.white70, fontSize: 12),
+        ),
+      );
+    }
+
+    final myViews = _viewsLast30.toDouble();
+    final myConv = _conversionRate;
+    final avgViews = _peerAvgViews!;
+    final avgConv = _peerAvgConversion!;
+
+    String _relative(double mine, double avg) {
+      if (avg == 0) return 'similar to';
+      final diff = ((mine - avg) / avg) * 100.0;
+      if (diff > 15) return 'higher than';
+      if (diff < -15) return 'lower than';
+      return 'similar to';
+    }
+
+    return _CardContainer(
+      title: 'Category benchmark',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Based on $_peerCount businesses in your category:',
+            style: const TextStyle(color: Colors.white70, fontSize: 12),
+          ),
+          const SizedBox(height: 8),
+          _BenchmarkRow(
+            label: 'Views (30 days)',
+            yourValue: myViews.toStringAsFixed(0),
+            avgValue: avgViews.toStringAsFixed(0),
+            relativeText: _relative(myViews, avgViews),
+            percentile:
+                _viewsPercentile != null ? _viewsPercentile!.toStringAsFixed(0) : null,
+          ),
+          const SizedBox(height: 6),
+          _BenchmarkRow(
+            label: 'Conversion rate',
+            yourValue: '${(myConv * 100).toStringAsFixed(1)}%',
+            avgValue: '${(avgConv * 100).toStringAsFixed(1)}%',
+            relativeText: _relative(myConv, avgConv),
+            percentile: _conversionPercentile != null
+                ? _conversionPercentile!.toStringAsFixed(0)
+                : null,
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Percentiles tell you what percentage of businesses you are performing better than.',
+            style: TextStyle(color: Colors.white54, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLeadsCard(BuildContext context) {
     return _CardContainer(
       title: 'Recent leads (last 30 days)',
       child: _leads.isEmpty
           ? const Text(
               'No leads in the last 30 days yet.\n\n'
-              'When people view your profile, call, WhatsApp, get directions or share your business, they will appear here.',
+              'When people view your profile, call, WhatsApp, get directions or share your business, they will appear here with a lead quality indicator.',
               style: TextStyle(color: Colors.white70),
             )
-          : ListView.separated(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _leads.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 6),
-              itemBuilder: (context, index) {
-                final lead = _leads[index];
-                return Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.45),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.white24),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // First row: action + time
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          : Column(
+              children: [
+                // Preview only the first 5 leads on the stats screen
+                ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: _leads.length > 5 ? 5 : _leads.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 6),
+                  itemBuilder: (context, index) {
+                    final lead = _leads[index];
+                    return Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.45),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Flexible(
-                            child: Text(
-                              lead.actionLabel,
+                          // First row: action + time + quality chip
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      lead.actionLabel,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      _formatDateTime(lead.createdAt),
+                                      style: const TextStyle(
+                                        color: Colors.white54,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: _qualityColor(lead.qualityScore)
+                                      .withOpacity(0.2),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: _qualityColor(lead.qualityScore),
+                                  ),
+                                ),
+                                child: Text(
+                                  lead.qualityLabel,
+                                  style: TextStyle(
+                                    color: _qualityColor(lead.qualityScore),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          if (lead.userName != null)
+                            Text(
+                              lead.userName!,
                               style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600,
+                                color: Colors.white70,
+                                fontSize: 13,
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            _formatDateTime(lead.createdAt),
-                            style: const TextStyle(
-                              color: Colors.white54,
-                              fontSize: 11,
-                            ),
-                          ),
                         ],
                       ),
-                      const SizedBox(height: 4),
-                      if (lead.userName != null)
-                        Text(
-                          lead.userName!,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13,
+                    );
+                  },
+                ),
+
+                // “View all leads” CTA if there are more than 5
+                if (_leads.length > 5) ...[
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => FullLeadsScreen(
+                              leads: _leads,
+                              companyName: _selectedCompany?['name']
+                                      ?.toString() ??
+                                  'Your business',
+                            ),
                           ),
-                        ),
-                    ],
+                        );
+                      },
+                      child: Text('View all leads (${_leads.length})'),
+                    ),
                   ),
-                );
-              },
+                ],
+              ],
             ),
     );
   }
@@ -689,17 +1360,46 @@ class _DailyViews {
   });
 }
 
+class _HourBucket {
+  final int hour;
+  final int count;
+
+  _HourBucket({
+    required this.hour,
+    required this.count,
+  });
+}
+
+class _CompanyAgg {
+  int views = 0;
+  int actions = 0;
+}
+
+class _LeadQuality {
+  final int score;
+  final String label;
+
+  _LeadQuality({
+    required this.score,
+    required this.label,
+  });
+}
+
 class _LeadEvent {
   final String? userName;
   final String eventType;
   final String actionLabel;
   final DateTime createdAt;
+  final int qualityScore;
+  final String qualityLabel;
 
   _LeadEvent({
     required this.userName,
     required this.eventType,
     required this.actionLabel,
     required this.createdAt,
+    required this.qualityScore,
+    required this.qualityLabel,
   });
 }
 
@@ -740,6 +1440,134 @@ class _StatCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _FunnelRow extends StatelessWidget {
+  final String label;
+  final int value;
+  final int base;
+  final double percentOfPrevious;
+
+  const _FunnelRow({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.base,
+    required this.percentOfPrevious,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = base == 0 ? 0.0 : value / base;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            Text(
+              '$value',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${percentOfPrevious.toStringAsFixed(1)}%',
+              style: const TextStyle(
+                color: Colors.white60,
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        LinearProgressIndicator(
+          value: ratio.clamp(0.0, 1.0),
+          minHeight: 6,
+          backgroundColor: Colors.white12,
+        ),
+      ],
+    );
+  }
+}
+
+class _BenchmarkRow extends StatelessWidget {
+  final String label;
+  final String yourValue;
+  final String avgValue;
+  final String relativeText;
+  final String? percentile;
+
+  const _BenchmarkRow({
+    super.key,
+    required this.label,
+    required this.yourValue,
+    required this.avgValue,
+    required this.relativeText,
+    this.percentile,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 13,
+            ),
+          ),
+        ),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              'You: $yourValue',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+              ),
+            ),
+            Text(
+              'Category avg: $avgValue',
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 11,
+              ),
+            ),
+            Text(
+              'You are $relativeText similar businesses',
+              style: const TextStyle(
+                color: Colors.white60,
+                fontSize: 11,
+              ),
+            ),
+            if (percentile != null)
+              Text(
+                'You perform better than ~${percentile!}% of businesses',
+                style: const TextStyle(
+                  color: Colors.white60,
+                  fontSize: 11,
+                ),
+              ),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -816,6 +1644,136 @@ class _CardContainer extends StatelessWidget {
           const SizedBox(height: 8),
           child,
         ],
+      ),
+    );
+  }
+}
+
+class FullLeadsScreen extends StatelessWidget {
+  final List<_LeadEvent> leads;
+  final String companyName;
+
+  const FullLeadsScreen({
+    super.key,
+    required this.leads,
+    required this.companyName,
+  });
+
+  Color _qualityColorForLead(_LeadEvent lead) {
+    if (lead.qualityScore >= 3) return Colors.greenAccent;
+    if (lead.qualityScore == 2) return Colors.orangeAccent;
+    return Colors.white38;
+  }
+
+  String _formatDateTimeLocal(DateTime dt) {
+    final date =
+        '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year.toString()}';
+    final time =
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    return '$date  •  $time';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        title: Text('Leads — $companyName'),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+      ),
+      body: HiveBackground(
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: leads.isEmpty
+                ? const Center(
+                    child: Text(
+                      'No leads in the last 30 days yet.',
+                      style: TextStyle(color: Colors.white70),
+                    ),
+                  )
+                : ListView.separated(
+                    itemCount: leads.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (context, index) {
+                      final lead = leads[index];
+                      final chipColor = _qualityColorForLead(lead);
+
+                      return Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.45),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        lead.actionLabel,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        _formatDateTimeLocal(lead.createdAt),
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: chipColor.withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(color: chipColor),
+                                  ),
+                                  child: Text(
+                                    lead.qualityLabel,
+                                    style: TextStyle(
+                                      color: chipColor,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            if (lead.userName != null)
+                              Text(
+                                lead.userName!,
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 13,
+                                ),
+                              ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ),
       ),
     );
   }

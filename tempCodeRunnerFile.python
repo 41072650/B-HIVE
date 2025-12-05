@@ -1,0 +1,54 @@
+from graphviz import Digraph
+
+def ffbd_F3():
+    dot = Digraph(
+        "FFBD_F3",
+        format="png",
+        graph_attr={
+            "label": "FFBD Level 1 - F 3.0 SUPPORT OPERATOR TO POSITION HOIST AT LOAD",
+            "labelloc": "top",
+            "fontsize": "18",
+            "fontname": "Helvetica",
+            "rankdir": "LR",
+            "splines": "ortho",
+        },
+        node_attr={
+            "shape": "box",
+            "style": "rounded,filled",
+            "fillcolor": "white",
+            "fontname": "Helvetica",
+            "fontsize": "11",
+        },
+        edge_attr={
+            "fontname": "Helvetica",
+            "fontsize": "9",
+            "arrowsize": "0.8",
+        },
+    )
+
+    # Level-1 sub-functions for F 3.0 (whole system, not just pendant)
+    steps = [
+        ("F3_1", "F 3.1\nOperator moves joystick\n(to position hoist)"),
+        ("F3_2", "F 3.2\nPendant reads joystick\n(ADC DMA buffer)"),
+        ("F3_3", "F 3.3\nApply E-STOP logic\nset RUN / SAFE values"),
+        ("F3_4", "F 3.4\nFormat RF packet\n(S:run,E:estop,X,Y)"),
+        ("F3_5", "F 3.5\nTransmit packet via\nNRF24_Transmit()"),
+        ("F3_6", "F 3.6\nHoist controller decodes\ncommand and drives motors"),
+        ("F3_7", "F 3.7\nHoisting mechanism moves\nhoist relative to load"),
+        ("F3_8", "F 3.8\nPendant receives ACK\nand updates LCD / LEDs"),
+    ]
+
+    # Add nodes
+    for node_id, label in steps:
+        dot.node(node_id, label=label)
+
+    # Chain them
+    for (src, _), (dst, _) in zip(steps, steps[1:]):
+        dot.edge(src, dst)
+
+    # Render to file
+    dot.render("FFBD_F3_Level1", cleanup=True)
+
+if __name__ == "__main__":
+    ffbd_F3()
+    print("Generated FFBD_F3_Level1.png")

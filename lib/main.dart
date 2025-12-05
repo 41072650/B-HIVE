@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'supabase_client.dart';
 
 import 'screens/splash_screen.dart';
+import 'screens/post_job_screen.dart'; // 👈 NEW
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,6 +50,15 @@ class ConnectHiveApp extends StatelessWidget {
 
       // ⬇️ Always show splash first, then it will push AuthGate
       home: const SplashScreen(),
+
+      // ⬇️ NEW: route for posting a job
+      routes: {
+        '/post-job': (context) {
+          final companyId =
+              ModalRoute.of(context)!.settings.arguments as String;
+          return PostJobScreen(companyId: companyId);
+        },
+      },
     );
   }
 }

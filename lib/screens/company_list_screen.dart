@@ -6,7 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import '../supabase_client.dart';
 import 'company_detail_screen.dart';
 import '../widgets/hive_background.dart';
-import '../Constants/category_map.dart'; // must contain: const Map<String, List<String>> kCategoryMap = {...};
+import '../Constants/category_map.dart'; // must contain: const Map<String, List<String>> kCategorySubcategories = {...};
 
 enum CompanySort { newest, rating, name, closest }
 
@@ -56,7 +56,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
   // ─────────────── CATEGORY + SUBCATEGORY OPTIONS ───────────────
 
-  /// Categories come from kCategoryMap so they are stable.
+  /// Categories come from kCategorySubcategories so they are stable.
   List<String> get _categoryOptions {
     final keys = kCategorySubcategories.keys.toList();
 
@@ -75,8 +75,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
     return keys;
   }
 
-  /// Subcategories are read from kCategoryMap for the selected category.
-  /// We *don't* add "All" here; we handle that as the first chip ourselves.
+  /// Subcategories are read from kCategorySubcategories for the selected category.
   List<String> get _availableSubcategories {
     if (_selectedCategoryFilter == 'All') {
       return const <String>[];
@@ -182,16 +181,25 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
       final matchesCategory =
           _selectedCategoryFilter == 'All' ||
-          category == _selectedCategoryFilter;
+              category == _selectedCategoryFilter;
 
-      final matchesSubcategory = _selectedSubcategory == null ||
-          subcategory == _selectedSubcategory;
+      final matchesSubcategory =
+          _selectedSubcategory == null || subcategory == _selectedSubcategory;
 
       return matchesSearch && matchesCategory && matchesSubcategory;
     }).toList();
 
-    // Sort
+    // Sort – PAID BUSINESSES FIRST, then by selected sort mode
     filtered.sort((a, b) {
+      final aPaid = (a['is_paid'] == true) ? 1 : 0;
+      final bPaid = (b['is_paid'] == true) ? 1 : 0;
+
+      // Paid first
+      if (aPaid != bPaid) {
+        return bPaid.compareTo(aPaid); // 1 before 0
+      }
+
+      // Then apply normal sort inside each group
       switch (_sortBy) {
         case CompanySort.newest:
           final da = _parseDate(a['inserted_at']);
@@ -212,7 +220,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
           final userLat = _userLat;
           final userLon = _userLon;
           if (userLat == null || userLon == null) {
-            return 0; // no location → keep order
+            return 0; // no location → keep within group order
           }
 
           final la = (a['latitude'] as num?)?.toDouble();
@@ -237,175 +245,244 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text('Companies', style: TextStyle(color: Colors.white)),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        actions: [
-          IconButton(
-            onPressed: _loadCompanies,
-            icon: const Icon(Icons.refresh, color: Colors.white),
-          ),
-        ],
-      ),
-      body: HiveBackground(
-        child: Column(
-          children: [
-            const SizedBox(height: 70),
+    final filteredCompanies = _filteredCompanies;
 
-            // 🔍 SEARCH BAR
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: TextField(
-                onChanged: (value) {
-                  setState(() {
-                    _searchQuery = value;
-                  });
-                },
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: "Search companies...",
-                  hintStyle: const TextStyle(color: Colors.white70),
-                  prefixIcon: const Icon(Icons.search, color: Colors.white70),
-                  filled: true,
-                  fillColor: Colors.black.withOpacity(0.4),
-                  contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                  enabledBorder: OutlineInputBorder(
-                    borderSide: const BorderSide(color: Colors.white24),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderSide: const BorderSide(color: Colors.white70),
-                    borderRadius: BorderRadius.circular(12),
+    return Scaffold(
+      body: HiveBackground(
+        child: SafeArea(
+          child: Column(
+            children: [
+              const SizedBox(height: 12),
+
+              // 🔍 SEARCH BAR
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: TextField(
+                  onChanged: (value) {
+                    setState(() {
+                      _searchQuery = value;
+                    });
+                  },
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: "Search companies...",
+                    hintStyle: const TextStyle(color: Colors.white70),
+                    prefixIcon:
+                        const Icon(Icons.search, color: Colors.white70),
+                    filled: true,
+                    fillColor: Colors.black.withOpacity(0.4),
+                    contentPadding:
+                        const EdgeInsets.symmetric(vertical: 12),
+                    enabledBorder: OutlineInputBorder(
+                      borderSide: const BorderSide(color: Colors.white24),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderSide: const BorderSide(color: Colors.white70),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
                 ),
               ),
-            ),
 
-            const SizedBox(height: 8),
+              const SizedBox(height: 8),
 
-            // 🏷 CATEGORY CHIPS
-            _buildCategoryBar(),
+              // 🏷 CATEGORY CHIPS
+              _buildCategoryBar(),
 
-            // 🔽 SUB-CATEGORY CHIPS
-            _buildSubcategoryBar(),
+              // 🔽 SUB-CATEGORY CHIPS
+              _buildSubcategoryBar(),
 
-            const SizedBox(height: 8),
+              const SizedBox(height: 8),
 
-            // ↕️ SORT ROW
-            _buildSortRow(),
+              // ↕️ SORT ROW
+              _buildSortRow(),
 
-            const SizedBox(height: 8),
+              const SizedBox(height: 8),
 
-            // LIST
-            Expanded(
-              child: _loading
-                  ? const Center(
-                      child: CircularProgressIndicator(color: Colors.white),
-                    )
-                  : _filteredCompanies.isEmpty
-                      ? const Center(
-                          child: Text(
-                            'No matching companies.',
-                            style: TextStyle(color: Colors.white70),
-                          ),
-                        )
-                      : ListView.builder(
-                          padding: const EdgeInsets.only(top: 8),
-                          itemCount: _filteredCompanies.length,
-                          itemBuilder: (context, index) {
-                            final company = _filteredCompanies[index]
-                                as Map<String, dynamic>;
-                            final ratingAvg =
-                                (company['rating_avg'] as num? ?? 0).toDouble();
-                            final ratingCount =
-                                (company['rating_count'] as int? ?? 0);
-
-                            double? distanceKm;
-                            if (_userLat != null &&
-                                _userLon != null &&
-                                company['latitude'] != null &&
-                                company['longitude'] != null) {
-                              final lat =
-                                  (company['latitude'] as num).toDouble();
-                              final lon =
-                                  (company['longitude'] as num).toDouble();
-                              distanceKm =
-                                  _distanceKm(_userLat!, _userLon!, lat, lon);
-                            }
-
-                            String subtitleText =
-                                '${company['category'] ?? ''} • ${company['city'] ?? ''}';
-                            if ((company['subcategory'] ?? '')
-                                .toString()
-                                .isNotEmpty) {
-                              subtitleText =
-                                  '${company['subcategory']} • $subtitleText';
-                            }
-                            if (distanceKm != null) {
-                              subtitleText +=
-                                  ' • ${distanceKm.toStringAsFixed(1)} km away';
-                            }
-
-                            return ListTile(
-                              leading: const CircleAvatar(
-                                backgroundColor: Colors.white24,
-                                child:
-                                    Icon(Icons.business, color: Colors.white),
-                              ),
-                              title: Text(
-                                company['name'] ?? '',
-                                style: const TextStyle(color: Colors.white),
-                              ),
-                              subtitle: Text(
-                                subtitleText,
-                                style:
-                                    const TextStyle(color: Colors.white70),
-                              ),
-                              trailing: ratingCount == 0
-                                  ? const Text(
-                                      'No ratings',
-                                      style: TextStyle(color: Colors.white70),
-                                    )
-                                  : Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(
-                                          Icons.star,
-                                          color: Colors.amber,
-                                          size: 18,
-                                        ),
-                                        const SizedBox(width: 2),
-                                        Text(
-                                          ratingAvg.toStringAsFixed(1),
-                                          style: const TextStyle(
-                                              color: Colors.white),
-                                        ),
-                                      ],
-                                    ),
-                              onTap: () async {
-                                final changed = await Navigator.push<bool>(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) =>
-                                        CompanyDetailScreen(company: company),
-                                  ),
-                                );
-
-                                if (changed == true) {
-                                  _loadCompanies();
-                                }
-                              },
-                            );
-                          },
-                        ),
-            ),
-          ],
+              // LIST + PULL-TO-REFRESH
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: _loadCompanies,
+                  color: Colors.amber,
+                  backgroundColor: Colors.black87,
+                  child: _buildCompanyList(filteredCompanies),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
+    );
+  }
+
+  // Build the scrollable list used by RefreshIndicator
+  Widget _buildCompanyList(List<dynamic> filteredCompanies) {
+    // AlwaysScrollableScrollPhysics lets you pull-to-refresh
+    // even if there are few or zero items.
+    if (_loading) {
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: const [
+          SizedBox(
+            height: 200,
+            child: Center(
+              child: CircularProgressIndicator(color: Colors.white),
+            ),
+          ),
+        ],
+      );
+    }
+
+    if (filteredCompanies.isEmpty) {
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: const [
+          SizedBox(
+            height: 200,
+            child: Center(
+              child: Text(
+                'No matching companies.',
+                style: TextStyle(color: Colors.white70),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return ListView.builder(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.only(top: 8),
+      itemCount: filteredCompanies.length,
+      itemBuilder: (context, index) {
+        final company = filteredCompanies[index] as Map<String, dynamic>;
+        final ratingAvg =
+            (company['rating_avg'] as num? ?? 0).toDouble();
+        final ratingCount =
+            (company['rating_count'] as int? ?? 0);
+        final isPaid = company['is_paid'] == true;
+
+        final logoUrl = (company['logo_url'] ?? '') as String?;
+
+        double? distanceKm;
+        if (_userLat != null &&
+            _userLon != null &&
+            company['latitude'] != null &&
+            company['longitude'] != null) {
+          final lat = (company['latitude'] as num).toDouble();
+          final lon = (company['longitude'] as num).toDouble();
+          distanceKm = _distanceKm(_userLat!, _userLon!, lat, lon);
+        }
+
+        String subtitleText =
+            '${company['category'] ?? ''} • ${company['city'] ?? ''}';
+        if ((company['subcategory'] ?? '').toString().isNotEmpty) {
+          subtitleText = '${company['subcategory']} • $subtitleText';
+        }
+        if (distanceKm != null) {
+          subtitleText += ' • ${distanceKm.toStringAsFixed(1)} km away';
+        }
+
+        // Decide leading avatar (logo or generic)
+        final Widget leadingAvatar;
+        if (logoUrl != null && logoUrl.isNotEmpty) {
+          leadingAvatar = CircleAvatar(
+            backgroundColor: Colors.white10,
+            backgroundImage: NetworkImage(logoUrl),
+          );
+        } else {
+          leadingAvatar = const CircleAvatar(
+            backgroundColor: Colors.white24,
+            child: Icon(Icons.business, color: Colors.white),
+          );
+        }
+
+        // GOLD OUTLINE FOR PAID COMPANIES
+        return Container(
+          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isPaid
+                  ? const Color.fromARGB(255, 241, 178, 70)
+                  : Colors.white24,
+              width: isPaid ? 1.6 : 0.8,
+            ),
+            color: Colors.black.withOpacity(0.5),
+          ),
+          child: ListTile(
+            leading: leadingAvatar,
+            title: Text(
+              company['name'] ?? '',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            subtitle: Text(
+              subtitleText,
+              style: const TextStyle(color: Colors.white70),
+            ),
+
+            // VERIFIED BADGE + RATING IN TRAILING AREA
+            trailing: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (isPaid)
+                  const Icon(
+                    Icons.verified,
+                    size: 18,
+                    color: Colors.greenAccent,
+                  ),
+                const SizedBox(height: 4),
+                if (ratingCount == 0)
+                  const Text(
+                    'No ratings',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                    ),
+                  )
+                else
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.star,
+                        color: Colors.amber,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 2),
+                      Text(
+                        ratingAvg.toStringAsFixed(1),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+            onTap: () async {
+              final changed = await Navigator.push<bool>(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => CompanyDetailScreen(
+                    company: company,
+                  ),
+                ),
+              );
+
+              if (changed == true) {
+                _loadCompanies();
+              }
+            },
+          ),
+        );
+      },
     );
   }
 
@@ -474,8 +551,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
             value = label;
           }
 
-          final selected =
-              _selectedSubcategory == value ||
+          final selected = _selectedSubcategory == value ||
               (value == null && _selectedSubcategory == null);
 
           return ChoiceChip(

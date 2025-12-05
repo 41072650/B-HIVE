@@ -6,6 +6,7 @@ import 'company_list_screen.dart';
 import 'edit_profile_screen.dart';
 import 'business_stats_screen.dart';
 import 'business_profile_screen.dart';
+import 'jobs_screen.dart'; // 👈 NEW
 
 class LandingScreen extends StatefulWidget {
   const LandingScreen({super.key});
@@ -73,13 +74,16 @@ class _LandingScreenState extends State<LandingScreen> {
       // 0: Home (companies list)
       CompanyListScreen(key: _companyListKey),
 
-      // 1: My Business (only if business mode)
+      // 1: Jobs (everyone sees this)
+      JobsScreen(isBusiness: _isBusiness),
+
+      // 2: My Business (only if business mode)
       if (_isBusiness)
         BusinessProfileScreen(
           onBusinessChanged: _onBusinessChanged,
         ),
 
-      // 2: Business stats (only if business mode)
+      // 3: Business stats (only if business mode)
       if (_isBusiness)
         const BusinessStatsScreen(),
 
@@ -100,6 +104,10 @@ class _LandingScreenState extends State<LandingScreen> {
       const BottomNavigationBarItem(
         icon: Icon(Icons.home_rounded),
         label: 'Home',
+      ),
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.work_rounded),
+        label: 'Jobs',
       ),
       if (_isBusiness)
         const BottomNavigationBarItem(

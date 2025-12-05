@@ -1,5 +1,9 @@
 // lib/screens/business_profile_screen.dart
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../supabase_client.dart';
@@ -53,6 +57,13 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
   List<Map<String, dynamic>> _myCompanies = [];
   String? _companyId; // null = “creating new”
   bool _isCreatingNew = false;
+  bool _isPaid = false; // subscription flag for the selected company
+
+  // ---- Logo upload state ----
+  final ImagePicker _picker = ImagePicker();
+  Uint8List? _newLogoBytes;
+  String? _newLogoExt;
+  String? _logoUrl; // current stored logo URL
 
   @override
   void initState() {
@@ -169,9 +180,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
         // No company yet → default to create mode
         _companyId = null;
         _isCreatingNew = true;
+        _isPaid = false;
         _clearForm();
       } else {
-        // Have at least one company → start in edit mode
+        // Have at least one company → start in edit mode with first one
         _isCreatingNew = false;
         _applyCompany(list.first);
       }
@@ -200,6 +212,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     _phoneController.clear();
     _mapsUrlController.clear();
     _selectedCategory = null;
+    _isPaid = false;
+    _logoUrl = null;
+    _newLogoBytes = null;
+    _newLogoExt = null;
   }
 
   void _applyCompany(Map<String, dynamic> data) {
@@ -218,11 +234,16 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
       _emailController.text = (data['email'] ?? '') as String;
       _phoneController.text = (data['phone'] ?? '') as String;
       _mapsUrlController.text = (data['maps_url'] ?? '') as String;
+      _logoUrl = (data['logo_url'] ?? '') as String?;
 
       if (_selectedCategory != null &&
           !_categories.contains(_selectedCategory)) {
         _selectedCategory = null;
       }
+
+      _isPaid = data['is_paid'] == true;
+      _newLogoBytes = null;
+      _newLogoExt = null;
     });
   }
 
@@ -266,6 +287,52 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     return null;
   }
 
+  // ─── Logo picking & upload ───
+
+  Future<void> _pickNewLogo() async {
+    try {
+      final XFile? picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 85,
+      );
+      if (picked == null) return;
+
+      final bytes = await picked.readAsBytes();
+      final ext = picked.name.split('.').last.toLowerCase();
+
+      setState(() {
+        _newLogoBytes = bytes;
+        _newLogoExt = ext;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to pick logo: $e')),
+      );
+    }
+  }
+
+  Future<String?> _uploadLogoIfNeeded(String companyId) async {
+    if (_newLogoBytes == null) {
+      return _logoUrl;
+    }
+
+    final ext = _newLogoExt ?? 'jpg';
+    final path =
+        'logos/$companyId-${DateTime.now().millisecondsSinceEpoch}.$ext';
+
+    await supabase.storage.from('company-logos').uploadBinary(
+          path,
+          _newLogoBytes!,
+          fileOptions: FileOptions(
+            contentType: 'image/$ext',
+          ),
+        );
+
+    final publicUrl = supabase.storage.from('company-logos').getPublicUrl(path);
+    return publicUrl;
+  }
+
   Future<void> _createCompany() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -283,7 +350,8 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
       final mapsUrl = _mapsUrlController.text.trim();
       final coords = _extractLatLonFromMapsUrl(mapsUrl);
 
-      final data = <String, dynamic>{
+      // Insert without logo first to get company id
+      final insertData = <String, dynamic>{
         'name': _nameController.text.trim(),
         'slogan': _sloganController.text.trim(),
         'category': _selectedCategory,
@@ -296,14 +364,33 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
         'phone': _phoneController.text.trim(),
         'maps_url': mapsUrl,
         'owner_id': user.id,
+        'is_paid': false, // new companies start on free tier
       };
 
       if (coords != null) {
-        data['latitude'] = coords['latitude'];
-        data['longitude'] = coords['longitude'];
+        insertData['latitude'] = coords['latitude'];
+        insertData['longitude'] = coords['longitude'];
       }
 
-      await supabase.from('companies').insert(data);
+      final inserted = await supabase
+          .from('companies')
+          .insert(insertData)
+          .select()
+          .maybeSingle();
+
+      if (inserted == null || inserted['id'] == null) {
+        throw Exception('Could not create company record.');
+      }
+
+      final newCompanyId = inserted['id'].toString();
+
+      // Upload logo if selected
+      final logoUrl = await _uploadLogoIfNeeded(newCompanyId);
+      if (logoUrl != null && logoUrl.isNotEmpty) {
+        await supabase
+            .from('companies')
+            .update({'logo_url': logoUrl}).eq('id', newCompanyId);
+      }
 
       if (!mounted) return;
 
@@ -339,7 +426,7 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     try {
       final mapsUrl = _mapsUrlController.text.trim();
 
-      final data = {
+      final updateData = {
         'name': _nameController.text.trim(),
         'slogan': _sloganController.text.trim(),
         'category': _selectedCategory,
@@ -353,7 +440,16 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
         'maps_url': mapsUrl,
       };
 
-      await supabase.from('companies').update(data).eq('id', _companyId!);
+      // Upload logo if changed
+      final logoUrl = await _uploadLogoIfNeeded(_companyId!);
+      if (logoUrl != null && logoUrl.isNotEmpty) {
+        updateData['logo_url'] = logoUrl;
+      }
+
+      await supabase
+          .from('companies')
+          .update(updateData)
+          .eq('id', _companyId!);
 
       final coords = _extractLatLonFromMapsUrl(mapsUrl);
       if (coords != null) {
@@ -367,6 +463,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
       }
 
       if (!mounted) return;
+
+      _logoUrl = logoUrl ?? _logoUrl;
+      _newLogoBytes = null;
+      _newLogoExt = null;
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Business updated.')),
@@ -385,18 +485,77 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     }
   }
 
+  Widget _buildLogoPreview() {
+    Widget content;
+
+    if (_newLogoBytes != null) {
+      content = CircleAvatar(
+        radius: 32,
+        backgroundImage: MemoryImage(_newLogoBytes!),
+      );
+    } else if (_logoUrl != null && _logoUrl!.isNotEmpty) {
+      content = CircleAvatar(
+        radius: 32,
+        backgroundImage: NetworkImage(_logoUrl!),
+      );
+    } else {
+      content = const CircleAvatar(
+        radius: 32,
+        backgroundColor: Colors.white24,
+        child: Icon(Icons.business, color: Colors.white),
+      );
+    }
+
+    return Row(
+      children: [
+        content,
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: const [
+              Text(
+                'Company logo',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              SizedBox(height: 2),
+              Text(
+                'Add a logo to stand out in the search results.',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        TextButton.icon(
+          onPressed: _pickNewLogo,
+          icon: const Icon(Icons.upload_file, size: 18, color: Colors.amber),
+          label: const Text(
+            'Upload',
+            style: TextStyle(color: Colors.amber),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isEditingExisting = !_isCreatingNew && _companyId != null;
-    final primaryButtonText = isEditingExisting ? 'Save Changes' : 'Create Company';
+    final primaryButtonText =
+        isEditingExisting ? 'Save Changes' : 'Create Company';
+
+    // Paid companies unlock rich profile editing; free companies get basics only
+    final advancedLocked = !_isPaid;
 
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text('My Business'),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-      ),
+      // No AppBar here – cleaner top, like the companies screen
       body: HiveBackground(
         child: SafeArea(
           child: _loading
@@ -443,20 +602,53 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                       ),
                                     ),
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
-                                        const Text(
-                                          'BHive Business Subscription',
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.white,
-                                          ),
+                                        Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            const Text(
+                                              'BHive Business Subscription',
+                                              style: TextStyle(
+                                                fontSize: 16,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                            if (_companyId != null)
+                                              Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                        horizontal: 8,
+                                                        vertical: 4),
+                                                decoration: BoxDecoration(
+                                                  color: _isPaid
+                                                      ? Colors.green
+                                                      : Colors.orange,
+                                                  borderRadius:
+                                                      BorderRadius.circular(20),
+                                                ),
+                                                child: Text(
+                                                  _isPaid
+                                                      ? 'Verified'
+                                                      : 'Free plan',
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
                                         ),
                                         const SizedBox(height: 8),
-                                        const Text(
-                                          'Upgrade or manage your BHive Business subscription for this company to keep it verified and unlock analytics and extra visibility.',
-                                          style: TextStyle(
+                                        Text(
+                                          _isPaid
+                                              ? 'Your company is verified. You have full access to rich profile editing, analytics and extra visibility.'
+                                              : 'Create a basic listing for free. Upgrade to verify your business and unlock rich profile fields, analytics and extra visibility.',
+                                          style: const TextStyle(
                                             color: Colors.white70,
                                             fontSize: 13,
                                           ),
@@ -466,8 +658,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                           width: double.infinity,
                                           child: OutlinedButton(
                                             onPressed: _openSubscriptionPage,
-                                            child: const Text(
-                                              'Upgrade / Manage Subscription',
+                                            child: Text(
+                                              _isPaid
+                                                  ? 'Manage Subscription'
+                                                  : 'Upgrade / Verify Business',
                                             ),
                                           ),
                                         ),
@@ -478,10 +672,13 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   // Header section: mode & company selector
                                   if (_myCompanies.isNotEmpty) ...[
                                     DropdownButtonFormField<String>(
-                                      value: isEditingExisting ? _companyId : null,
-                                      decoration: bhiveInputDecoration('Select company'),
+                                      value:
+                                          isEditingExisting ? _companyId : null,
+                                      decoration: bhiveInputDecoration(
+                                          'Select company'),
                                       dropdownColor: const Color(0xFF020617),
-                                      style: const TextStyle(color: Colors.white),
+                                      style:
+                                          const TextStyle(color: Colors.white),
                                       items: _myCompanies
                                           .map(
                                             (c) => DropdownMenuItem<String>(
@@ -511,16 +708,19 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                           });
                                         } else {
                                           final company = _myCompanies.firstWhere(
-                                            (c) => c['id']?.toString() == value,
+                                            (c) =>
+                                                c['id']?.toString() == value,
                                           );
                                           _applyCompany(company);
                                           final name =
-                                              (company['name'] ?? 'your company')
+                                              (company['name'] ??
+                                                      'your company')
                                                   .toString();
                                           ScaffoldMessenger.of(context)
                                               .showSnackBar(
                                             SnackBar(
-                                              content: Text('Switched to $name'),
+                                              content:
+                                                  Text('Switched to $name'),
                                             ),
                                           );
                                         }
@@ -539,6 +739,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                     const SizedBox(height: 16),
                                   ],
 
+                                  // Logo upload
+                                  _buildLogoPreview(),
+                                  const SizedBox(height: 20),
+
                                   Text(
                                     isEditingExisting
                                         ? 'Edit your business details'
@@ -552,9 +756,12 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   const SizedBox(height: 16),
 
                                   // --- FORM FIELDS ---
+
+                                  // Free: always editable
                                   TextFormField(
                                     controller: _nameController,
-                                    style: const TextStyle(color: Colors.white),
+                                    style:
+                                        const TextStyle(color: Colors.white),
                                     decoration:
                                         bhiveInputDecoration('Company Name'),
                                     validator: (v) => (v == null || v.isEmpty)
@@ -563,19 +770,41 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   ),
                                   const SizedBox(height: 12),
 
+                                  // Paid: slogan
                                   TextFormField(
                                     controller: _sloganController,
-                                    style: const TextStyle(color: Colors.white),
+                                    style:
+                                        const TextStyle(color: Colors.white),
+                                    readOnly: advancedLocked,
                                     decoration:
-                                        bhiveInputDecoration('Company Slogan'),
+                                        bhiveInputDecoration('Company Slogan')
+                                            .copyWith(
+                                      helperText: advancedLocked
+                                          ? 'Upgrade to add a slogan that stands out in your profile.'
+                                          : null,
+                                      helperStyle: const TextStyle(
+                                        color: Colors.white60,
+                                        fontSize: 11,
+                                      ),
+                                      suffixIcon: advancedLocked
+                                          ? const Icon(
+                                              Icons.lock,
+                                              size: 18,
+                                              color: Colors.amberAccent,
+                                            )
+                                          : null,
+                                    ),
                                   ),
                                   const SizedBox(height: 12),
 
+                                  // Free: category
                                   DropdownButtonFormField<String>(
                                     value: _selectedCategory,
-                                    decoration: bhiveInputDecoration('Category'),
+                                    decoration:
+                                        bhiveInputDecoration('Category'),
                                     dropdownColor: const Color(0xFF020617),
-                                    style: const TextStyle(color: Colors.white),
+                                    style:
+                                        const TextStyle(color: Colors.white),
                                     items: _categories
                                         .map(
                                           (cat) => DropdownMenuItem(
@@ -584,38 +813,56 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                           ),
                                         )
                                         .toList(),
-                                    onChanged: (value) =>
-                                        setState(() => _selectedCategory = value),
-                                    validator: (v) =>
-                                        v == null ? 'Please choose a category' : null,
+                                    onChanged: (value) => setState(
+                                        () => _selectedCategory = value),
+                                    validator: (v) => v == null
+                                        ? 'Please choose a category'
+                                        : null,
                                   ),
                                   const SizedBox(height: 12),
 
+                                  // Free: city
                                   TextFormField(
                                     controller: _cityController,
-                                    style: const TextStyle(color: Colors.white),
-                                    decoration: bhiveInputDecoration('City'),
+                                    style:
+                                        const TextStyle(color: Colors.white),
+                                    decoration:
+                                        bhiveInputDecoration('City / Area'),
                                     validator: (v) => (v == null || v.isEmpty)
                                         ? 'Enter a city'
                                         : null,
                                   ),
                                   const SizedBox(height: 12),
 
+                                  // Paid: Google Maps link
                                   TextFormField(
                                     controller: _mapsUrlController,
-                                    style: const TextStyle(color: Colors.white),
+                                    style:
+                                        const TextStyle(color: Colors.white),
+                                    readOnly: advancedLocked,
                                     decoration: bhiveInputDecoration(
                                       'Google Maps Link',
-                                      hint:
-                                          'Paste the full Google Maps URL (with @lat,lon)',
+                                      hint: advancedLocked
+                                          ? 'Upgrade to add a map pin for better local search.'
+                                          : 'Paste the full Google Maps URL (with @lat,lon)',
+                                    ).copyWith(
+                                      suffixIcon: advancedLocked
+                                          ? const Icon(
+                                              Icons.lock,
+                                              size: 18,
+                                              color: Colors.amberAccent,
+                                            )
+                                          : null,
                                     ),
                                     keyboardType: TextInputType.url,
                                   ),
                                   const SizedBox(height: 12),
 
+                                  // Free: short description
                                   TextFormField(
                                     controller: _descriptionController,
-                                    style: const TextStyle(color: Colors.white),
+                                    style:
+                                        const TextStyle(color: Colors.white),
                                     maxLines: 3,
                                     decoration: bhiveInputDecoration(
                                       'Short Description',
@@ -623,48 +870,93 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   ),
                                   const SizedBox(height: 12),
 
+                                  // Paid: services
                                   TextFormField(
                                     controller: _servicesController,
-                                    style: const TextStyle(color: Colors.white),
+                                    style:
+                                        const TextStyle(color: Colors.white),
+                                    readOnly: advancedLocked,
                                     decoration: bhiveInputDecoration(
                                       'Services Offered (comma separated)',
+                                    ).copyWith(
+                                      helperText: advancedLocked
+                                          ? 'Upgrade to showcase detailed services on your profile.'
+                                          : null,
+                                      helperStyle: const TextStyle(
+                                        color: Colors.white60,
+                                        fontSize: 11,
+                                      ),
+                                      suffixIcon: advancedLocked
+                                          ? const Icon(
+                                              Icons.lock,
+                                              size: 18,
+                                              color: Colors.amberAccent,
+                                            )
+                                          : null,
                                     ),
                                   ),
                                   const SizedBox(height: 12),
 
+                                  // Paid: prices
                                   TextFormField(
                                     controller: _pricesController,
-                                    style: const TextStyle(color: Colors.white),
+                                    style:
+                                        const TextStyle(color: Colors.white),
                                     maxLines: 3,
+                                    readOnly: advancedLocked,
                                     decoration: bhiveInputDecoration(
                                       'Prices (one per line, e.g. "Engine design - R45 000")',
+                                    ).copyWith(
+                                      helperText: advancedLocked
+                                          ? 'Upgrade to list detailed pricing and packages.'
+                                          : null,
+                                      helperStyle: const TextStyle(
+                                        color: Colors.white60,
+                                        fontSize: 11,
+                                      ),
+                                      suffixIcon: advancedLocked
+                                          ? const Icon(
+                                              Icons.lock,
+                                              size: 18,
+                                              color: Colors.amberAccent,
+                                            )
+                                          : null,
                                     ),
                                   ),
                                   const SizedBox(height: 12),
 
+                                  // Free: images (we’ll only *use* first one on front-end for free)
                                   TextFormField(
                                     controller: _imageUrlsController,
-                                    style: const TextStyle(color: Colors.white),
+                                    style:
+                                        const TextStyle(color: Colors.white),
                                     decoration: bhiveInputDecoration(
                                       'Project Image URLs (comma separated)',
+                                      hint: _isPaid
+                                          ? 'Add multiple image URLs, separated by commas.'
+                                          : 'Free plan: only your first image will be shown.',
                                     ),
                                   ),
                                   const SizedBox(height: 12),
 
+                                  // Free: contact email
                                   TextFormField(
                                     controller: _emailController,
-                                    style: const TextStyle(color: Colors.white),
-                                    decoration:
-                                        bhiveInputDecoration('Contact Email'),
+                                    style:
+                                        const TextStyle(color: Colors.white),
+                                    decoration: bhiveInputDecoration(
+                                        'Contact Email'),
                                     keyboardType: TextInputType.emailAddress,
                                   ),
                                   const SizedBox(height: 12),
 
+                                  // Free: contact phone
                                   TextFormField(
                                     controller: _phoneController,
-                                    style: const TextStyle(color: Colors.white),
-                                    decoration:
-                                        bhiveInputDecoration('Contact Phone'),
+                                    style:
+                                        const TextStyle(color: Colors.white),
+                                    decoration: bhiveInputDecoration(
+                                        'Contact Phone'),
                                     keyboardType: TextInputType.phone,
                                   ),
                                   const SizedBox(height: 20),

@@ -1,0 +1,36 @@
+digraph FFBD_F3 {
+	graph [fontname=Helvetica fontsize=18 label="FFBD Level 1 - F 3.0 SUPPORT OPERATOR TO POSITION HOIST AT LOAD" labelloc=top rankdir=LR splines=ortho]
+	node [fillcolor=white fontname=Helvetica fontsize=11 shape=box style="rounded,filled"]
+	edge [arrowsize=0.8 fontname=Helvetica fontsize=9]
+	F3_1 [label="F 3.1
+Operator moves joystick
+(to position hoist)"]
+	F3_2 [label="F 3.2
+Pendant reads joystick
+(ADC DMA buffer)"]
+	F3_3 [label="F 3.3
+Apply E-STOP logic
+set RUN / SAFE values"]
+	F3_4 [label="F 3.4
+Format RF packet
+(S:run,E:estop,X,Y)"]
+	F3_5 [label="F 3.5
+Transmit packet via
+NRF24_Transmit()"]
+	F3_6 [label="F 3.6
+Hoist controller decodes
+command and drives motors"]
+	F3_7 [label="F 3.7
+Hoisting mechanism moves
+hoist relative to load"]
+	F3_8 [label="F 3.8
+Pendant receives ACK
+and updates LCD / LEDs"]
+	F3_1 -> F3_2
+	F3_2 -> F3_3
+	F3_3 -> F3_4
+	F3_4 -> F3_5
+	F3_5 -> F3_6
+	F3_6 -> F3_7
+	F3_7 -> F3_8
+}

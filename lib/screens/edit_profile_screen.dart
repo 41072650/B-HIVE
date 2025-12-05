@@ -441,31 +441,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text('Edit Profile'),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        foregroundColor: Colors.white,
-        titleTextStyle: const TextStyle(
-          color: Colors.white,
-          fontSize: 20,
-          fontWeight: FontWeight.w600,
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            tooltip: 'Settings',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const SettingsScreen(),
-                ),
-              );
-            },
-          ),
-        ],
-      ),
+      // No AppBar – keep it clean like the other tabs
       body: HiveBackground(
         child: SafeArea(
           child: Center(
@@ -474,6 +450,23 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // Top-right settings icon
+                  Align(
+                    alignment: Alignment.topRight,
+                    child: IconButton(
+                      icon: const Icon(Icons.settings, color: Colors.white),
+                      tooltip: 'Settings',
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const SettingsScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+
                   _buildAvatar(),
                   const SizedBox(height: 12),
 
