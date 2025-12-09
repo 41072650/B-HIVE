@@ -104,89 +104,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _changeEmail() async {
-    final user = supabase.auth.currentUser;
-    if (user == null) return;
-
-    final emailController = TextEditingController(text: user.email ?? '');
-    final formKey = GlobalKey<FormState>();
-
-    await showDialog(
-      context: context,
-      builder: (context) {
-        bool submitting = false;
-
-        return StatefulBuilder(
-          builder: (context, setStateDialog) {
-            Future<void> submit() async {
-              if (!formKey.currentState!.validate()) return;
-
-              setStateDialog(() => submitting = true);
-
-              try {
-                final newEmail = emailController.text.trim();
-
-                await supabase.auth.updateUser(
-                  UserAttributes(email: newEmail),
-                );
-
-                if (!mounted) return;
-                Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Email updated.')),
-                );
-              } catch (e) {
-                setStateDialog(() => submitting = false);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Failed to update email: $e')),
-                );
-              }
-            }
-
-            return AlertDialog(
-              title: const Text('Change Email'),
-              content: Form(
-                key: formKey,
-                child: TextFormField(
-                  controller: emailController,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(
-                    labelText: 'New email',
-                  ),
-                  validator: (v) {
-                    if (v == null || v.trim().isEmpty) {
-                      return 'Please enter an email';
-                    }
-                    if (!v.contains('@')) {
-                      return 'Please enter a valid email';
-                    }
-                    return null;
-                  },
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: submitting ? null : () => Navigator.pop(context),
-                  child: const Text('Cancel'),
-                ),
-                ElevatedButton(
-                  onPressed: submitting ? null : submit,
-                  child: submitting
-                      ? const SizedBox(
-                          height: 18,
-                          width: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Save'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
   Future<void> _changePassword() async {
     final passwordController = TextEditingController();
     final confirmController = TextEditingController();
@@ -593,15 +510,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         const SizedBox(height: 8),
 
-                        ListTile(
-                          leading:
-                              const Icon(Icons.email, color: Colors.white),
-                          title: const Text(
-                            "Change Email",
-                            style: TextStyle(color: Colors.white),
-                          ),
-                          onTap: _changeEmail,
-                        ),
+                        // Removed Change Email tile here
+
                         ListTile(
                           leading: const Icon(Icons.lock, color: Colors.white),
                           title: const Text(
@@ -778,3 +688,5 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 }
+
+////Test

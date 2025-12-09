@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../supabase_client.dart';
 import '../widgets/hive_background.dart';
 import '../widgets/bhive_inputs.dart';
+import '../Constants/category_map.dart'; // kCategorySubcategories, kAllCategories
 
 class BusinessProfileScreen extends StatefulWidget {
   final VoidCallback? onBusinessChanged;
@@ -37,17 +38,17 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
   final _phoneController = TextEditingController();
   final _mapsUrlController = TextEditingController();
 
-  final List<String> _categories = const [
-    'Construction',
-    'Engineering',
-    'Attorneys',
-    'IT Services',
-    'Manufacturing',
-    'Logistics',
-    'Consulting',
-  ];
-
+  // Category / Subcategory
   String? _selectedCategory;
+  String? _selectedSubcategory;
+
+  bool _usingOtherCategory = false;
+  bool _usingOtherSubcategory = false;
+
+  final TextEditingController _otherCategoryController =
+      TextEditingController();
+  final TextEditingController _otherSubcategoryController =
+      TextEditingController();
 
   // State
   bool _loading = true;
@@ -83,6 +84,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     _emailController.dispose();
     _phoneController.dispose();
     _mapsUrlController.dispose();
+
+    _otherCategoryController.dispose();
+    _otherSubcategoryController.dispose();
+
     super.dispose();
   }
 
@@ -211,7 +216,14 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     _emailController.clear();
     _phoneController.clear();
     _mapsUrlController.clear();
+
     _selectedCategory = null;
+    _selectedSubcategory = null;
+    _usingOtherCategory = false;
+    _usingOtherSubcategory = false;
+    _otherCategoryController.clear();
+    _otherSubcategoryController.clear();
+
     _isPaid = false;
     _logoUrl = null;
     _newLogoBytes = null;
@@ -219,13 +231,15 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
   }
 
   void _applyCompany(Map<String, dynamic> data) {
+    final category = (data['category'] ?? '') as String? ?? '';
+    final subcategory = (data['subcategory'] ?? '') as String? ?? '';
+
     setState(() {
       _companyId = data['id']?.toString();
       _isCreatingNew = false;
 
       _nameController.text = (data['name'] ?? '') as String;
       _sloganController.text = (data['slogan'] ?? '') as String;
-      _selectedCategory = (data['category'] ?? '') as String?;
       _cityController.text = (data['city'] ?? '') as String;
       _descriptionController.text = (data['description'] ?? '') as String;
       _servicesController.text = (data['services'] ?? '') as String;
@@ -236,9 +250,42 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
       _mapsUrlController.text = (data['maps_url'] ?? '') as String;
       _logoUrl = (data['logo_url'] ?? '') as String?;
 
-      if (_selectedCategory != null &&
-          !_categories.contains(_selectedCategory)) {
+      // Category handling
+      if (category.isEmpty) {
         _selectedCategory = null;
+        _usingOtherCategory = false;
+        _otherCategoryController.clear();
+      } else if (kAllCategories.contains(category)) {
+        _selectedCategory = category;
+        _usingOtherCategory = false;
+        _otherCategoryController.clear();
+      } else {
+        // Saved category is not in our list → treat as "Other"
+        _selectedCategory = null;
+        _usingOtherCategory = true;
+        _otherCategoryController.text = category;
+      }
+
+      // Subcategory handling
+      if (subcategory.isEmpty) {
+        _selectedSubcategory = null;
+        _usingOtherSubcategory = false;
+        _otherSubcategoryController.clear();
+      } else {
+        final validSubs =
+            _selectedCategory == null || _usingOtherCategory
+                ? const <String>[]
+                : (kCategorySubcategories[_selectedCategory] ?? const <String>[]);
+
+        if (!_usingOtherCategory && validSubs.contains(subcategory)) {
+          _selectedSubcategory = subcategory;
+          _usingOtherSubcategory = false;
+          _otherSubcategoryController.clear();
+        } else {
+          _selectedSubcategory = null;
+          _usingOtherSubcategory = true;
+          _otherSubcategoryController.text = subcategory;
+        }
       }
 
       _isPaid = data['is_paid'] == true;
@@ -333,6 +380,26 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     return publicUrl;
   }
 
+  /// Helper to get the values we will save to DB.
+  Map<String, dynamic> _buildCategoryPayload() {
+    final categoryToSave = _usingOtherCategory
+        ? _otherCategoryController.text.trim()
+        : (_selectedCategory ?? '');
+
+    String? subcategoryToSave;
+    if (_usingOtherSubcategory) {
+      final text = _otherSubcategoryController.text.trim();
+      subcategoryToSave = text.isEmpty ? null : text;
+    } else {
+      subcategoryToSave = _selectedSubcategory;
+    }
+
+    return {
+      'category': categoryToSave.isEmpty ? null : categoryToSave,
+      'subcategory': subcategoryToSave,
+    };
+  }
+
   Future<void> _createCompany() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -350,11 +417,14 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
       final mapsUrl = _mapsUrlController.text.trim();
       final coords = _extractLatLonFromMapsUrl(mapsUrl);
 
+      final categoryPayload = _buildCategoryPayload();
+
       // Insert without logo first to get company id
       final insertData = <String, dynamic>{
         'name': _nameController.text.trim(),
         'slogan': _sloganController.text.trim(),
-        'category': _selectedCategory,
+        'category': categoryPayload['category'],
+        'subcategory': categoryPayload['subcategory'],
         'city': _cityController.text.trim(),
         'description': _descriptionController.text.trim(),
         'services': _servicesController.text.trim(),
@@ -425,11 +495,13 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
 
     try {
       final mapsUrl = _mapsUrlController.text.trim();
+      final categoryPayload = _buildCategoryPayload();
 
       final updateData = {
         'name': _nameController.text.trim(),
         'slogan': _sloganController.text.trim(),
-        'category': _selectedCategory,
+        'category': categoryPayload['category'],
+        'subcategory': categoryPayload['subcategory'],
         'city': _cityController.text.trim(),
         'description': _descriptionController.text.trim(),
         'services': _servicesController.text.trim(),
@@ -510,10 +582,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
       children: [
         content,
         const SizedBox(width: 12),
-        Expanded(
+        const Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
+            children: [
               Text(
                 'Company logo',
                 style: TextStyle(
@@ -535,8 +607,8 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
         const SizedBox(width: 8),
         TextButton.icon(
           onPressed: _pickNewLogo,
-          icon: const Icon(Icons.upload_file, size: 18, color: Colors.amber),
-          label: const Text(
+          icon: Icon(Icons.upload_file, size: 18, color: Colors.amber),
+          label: Text(
             'Upload',
             style: TextStyle(color: Colors.amber),
           ),
@@ -554,8 +626,14 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     // Paid companies unlock rich profile editing; free companies get basics only
     final advancedLocked = !_isPaid;
 
+    // Subcategory list for current category (if not "Other")
+    final List<String> currentSubcategories = _usingOtherCategory
+        ? const <String>[]
+        : (_selectedCategory == null
+            ? const <String>[]
+            : (kCategorySubcategories[_selectedCategory] ?? const <String>[]));
+
     return Scaffold(
-      // No AppBar here – cleaner top, like the companies screen
       body: HiveBackground(
         child: SafeArea(
           child: _loading
@@ -671,7 +749,7 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
 
                                   // Header section: mode & company selector
                                   if (_myCompanies.isNotEmpty) ...[
-                                    DropdownButtonFormField<String>(
+                                    DropdownButtonFormField<String?>(
                                       value:
                                           isEditingExisting ? _companyId : null,
                                       decoration: bhiveInputDecoration(
@@ -679,25 +757,22 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                       dropdownColor: const Color(0xFF020617),
                                       style:
                                           const TextStyle(color: Colors.white),
-                                      items: _myCompanies
-                                          .map(
-                                            (c) => DropdownMenuItem<String>(
-                                              value: c['id']?.toString(),
-                                              child: Text(
-                                                (c['name'] ??
-                                                        'Unnamed company')
-                                                    .toString(),
-                                              ),
+                                      items: [
+                                        const DropdownMenuItem<String?>(
+                                          value: null,
+                                          child: Text('Create new company'),
+                                        ),
+                                        ..._myCompanies.map(
+                                          (c) => DropdownMenuItem<String?>(
+                                            value: c['id']?.toString(),
+                                            child: Text(
+                                              (c['name'] ??
+                                                      'Unnamed company')
+                                                  .toString(),
                                             ),
-                                          )
-                                          .toList()
-                                        ..insert(
-                                          0,
-                                          const DropdownMenuItem(
-                                            value: null,
-                                            child: Text('Create new company'),
                                           ),
                                         ),
+                                      ],
                                       onChanged: (value) {
                                         if (value == null) {
                                           // Switch to create mode
@@ -707,10 +782,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                             _clearForm();
                                           });
                                         } else {
-                                          final company = _myCompanies.firstWhere(
-                                            (c) =>
-                                                c['id']?.toString() == value,
-                                          );
+                                          final company = _myCompanies
+                                              .firstWhere((c) =>
+                                                  c['id']?.toString() ==
+                                                  value);
                                           _applyCompany(company);
                                           final name =
                                               (company['name'] ??
@@ -797,29 +872,153 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   ),
                                   const SizedBox(height: 12),
 
-                                  // Free: category
+                                  // Category dropdown + "Other"
                                   DropdownButtonFormField<String>(
-                                    value: _selectedCategory,
+                                    value: _usingOtherCategory
+                                        ? 'Other'
+                                        : _selectedCategory,
                                     decoration:
                                         bhiveInputDecoration('Category'),
                                     dropdownColor: const Color(0xFF020617),
                                     style:
                                         const TextStyle(color: Colors.white),
-                                    items: _categories
-                                        .map(
-                                          (cat) => DropdownMenuItem(
-                                            value: cat,
-                                            child: Text(cat),
-                                          ),
-                                        )
-                                        .toList(),
-                                    onChanged: (value) => setState(
-                                        () => _selectedCategory = value),
-                                    validator: (v) => v == null
-                                        ? 'Please choose a category'
-                                        : null,
+                                    items: [
+                                      ...kAllCategories.map(
+                                        (cat) => DropdownMenuItem(
+                                          value: cat,
+                                          child: Text(cat),
+                                        ),
+                                      ),
+                                      const DropdownMenuItem(
+                                        value: 'Other',
+                                        child: Text('Other'),
+                                      ),
+                                    ],
+                                    onChanged: (value) {
+                                      if (value == null) return;
+                                      setState(() {
+                                        if (value == 'Other') {
+                                          _usingOtherCategory = true;
+                                          _selectedCategory = null;
+                                          _selectedSubcategory = null;
+                                          _usingOtherSubcategory = false;
+                                          _otherSubcategoryController.clear();
+                                          // next frame focus text field
+                                          Future.microtask(() {
+                                            FocusScope.of(context)
+                                                .nextFocus();
+                                          });
+                                        } else {
+                                          _usingOtherCategory = false;
+                                          _selectedCategory = value;
+                                          _selectedSubcategory = null;
+                                          _usingOtherSubcategory = false;
+                                          _otherCategoryController.clear();
+                                          _otherSubcategoryController.clear();
+                                        }
+                                      });
+                                    },
+                                    validator: (_) {
+                                      if (_usingOtherCategory) {
+                                        if (_otherCategoryController.text
+                                            .trim()
+                                            .isEmpty) {
+                                          return 'Please enter a category';
+                                        }
+                                        return null;
+                                      }
+                                      if (_selectedCategory == null ||
+                                          _selectedCategory!.isEmpty) {
+                                        return 'Please choose a category';
+                                      }
+                                      return null;
+                                    },
                                   ),
+                                  if (_usingOtherCategory) ...[
+                                    const SizedBox(height: 8),
+                                    TextFormField(
+                                      controller: _otherCategoryController,
+                                      style: const TextStyle(
+                                          color: Colors.white),
+                                      decoration:
+                                          bhiveInputDecoration('Other category')
+                                              .copyWith(
+                                        hintText: 'Type your category',
+                                      ),
+                                    ),
+                                  ],
                                   const SizedBox(height: 12),
+
+                                  // Sub-category dropdown + Other (only if we have predefined subs)
+                                  if (currentSubcategories.isNotEmpty) ...[
+                                    DropdownButtonFormField<String>(
+                                      value: _usingOtherSubcategory
+                                          ? 'Other'
+                                          : _selectedSubcategory,
+                                      decoration: bhiveInputDecoration(
+                                          'Sub-category'),
+                                      dropdownColor:
+                                          const Color(0xFF020617),
+                                      style: const TextStyle(
+                                          color: Colors.white),
+                                      items: [
+                                        ...currentSubcategories.map(
+                                          (sub) => DropdownMenuItem(
+                                            value: sub,
+                                            child: Text(sub),
+                                          ),
+                                        ),
+                                        const DropdownMenuItem(
+                                          value: 'Other',
+                                          child: Text('Other'),
+                                        ),
+                                      ],
+                                      onChanged: (value) {
+                                        if (value == null) return;
+                                        setState(() {
+                                          if (value == 'Other') {
+                                            _usingOtherSubcategory = true;
+                                            _selectedSubcategory = null;
+                                            Future.microtask(() {
+                                              FocusScope.of(context)
+                                                  .nextFocus();
+                                            });
+                                          } else {
+                                            _usingOtherSubcategory = false;
+                                            _selectedSubcategory = value;
+                                            _otherSubcategoryController
+                                                .clear();
+                                          }
+                                        });
+                                      },
+                                      validator: (_) {
+                                        if (_usingOtherSubcategory &&
+                                            _otherSubcategoryController.text
+                                                .trim()
+                                                .isEmpty) {
+                                          return 'Please enter a sub-category';
+                                        }
+                                        return null;
+                                      },
+                                    ),
+                                    if (_usingOtherSubcategory) ...[
+                                      const SizedBox(height: 8),
+                                      TextFormField(
+                                        controller:
+                                            _otherSubcategoryController,
+                                        style: const TextStyle(
+                                            color: Colors.white),
+                                        decoration:
+                                            bhiveInputDecoration(
+                                                    'Other sub-category')
+                                                .copyWith(
+                                          hintText:
+                                              'Type your sub-category',
+                                        ),
+                                      ),
+                                    ],
+                                    const SizedBox(height: 12),
+                                  ],
 
                                   // Free: city
                                   TextFormField(
@@ -925,7 +1124,7 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                   ),
                                   const SizedBox(height: 12),
 
-                                  // Free: images (we’ll only *use* first one on front-end for free)
+                                  // Free: images
                                   TextFormField(
                                     controller: _imageUrlsController,
                                     style:
@@ -946,7 +1145,8 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                                         const TextStyle(color: Colors.white),
                                     decoration: bhiveInputDecoration(
                                         'Contact Email'),
-                                    keyboardType: TextInputType.emailAddress,
+                                    keyboardType:
+                                        TextInputType.emailAddress,
                                   ),
                                   const SizedBox(height: 12),
 
