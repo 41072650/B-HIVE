@@ -271,6 +271,15 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
         .showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  void _openClaimScreen(Map<String, dynamic> company) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ClaimBusinessScreen(company: company),
+      ),
+    );
+  }
+
   // -----------------------------------------
   // UI
   // -----------------------------------------
@@ -286,6 +295,10 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
 
     // NEW: pull logo_url for header avatar
     final String logoUrl = (c['logo_url'] ?? '').toString();
+
+    // NEW: claimed status
+    final bool isClaimed =
+        (c['is_claimed'] == true) || (c['owner_id'] != null);
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -317,6 +330,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                     children: [
                       // HEADER
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           CircleAvatar(
                             backgroundColor: Colors.white24,
@@ -337,13 +351,72 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                               crossAxisAlignment:
                                   CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  c['name']?.toString() ?? '',
-                                  style: const TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                  ),
+                                Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.center,
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        c['name']?.toString() ?? '',
+                                        style: const TextStyle(
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding:
+                                          const EdgeInsets.symmetric(
+                                              horizontal: 8,
+                                              vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: isClaimed
+                                            ? Colors.green
+                                                .withOpacity(0.2)
+                                            : Colors.orange
+                                                .withOpacity(0.2),
+                                        borderRadius:
+                                            BorderRadius.circular(16),
+                                        border: Border.all(
+                                          color: isClaimed
+                                              ? Colors.greenAccent
+                                              : Colors.orangeAccent,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            isClaimed
+                                                ? Icons.verified
+                                                : Icons.lock_open,
+                                            size: 14,
+                                            color: isClaimed
+                                                ? Colors.greenAccent
+                                                : Colors.orangeAccent,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            isClaimed
+                                                ? 'Claimed'
+                                                : 'Unclaimed',
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              color: isClaimed
+                                                  ? Colors
+                                                      .greenAccent
+                                                  : Colors
+                                                      .orangeAccent,
+                                              fontWeight:
+                                                  FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
                                 ),
                                 if ((c['slogan'] ?? '')
                                     .toString()
@@ -366,6 +439,57 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                         ],
                       ),
                       const SizedBox(height: 16),
+
+                      // CLAIM BANNER (only if unclaimed)
+                      if (!isClaimed) ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.amberAccent,
+                              width: 1,
+                            ),
+                          ),
+                          child: Row(
+                            crossAxisAlignment:
+                                CrossAxisAlignment.center,
+                            children: [
+                              const Icon(
+                                Icons.how_to_reg,
+                                color: Colors.amberAccent,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 8),
+                              const Expanded(
+                                child: Text(
+                                  'Is this your business? Claim it to update details and unlock extra features.',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              TextButton(
+                                onPressed: () =>
+                                    _openClaimScreen(c),
+                                child: const Text(
+                                  'Claim',
+                                  style: TextStyle(
+                                    color: Colors.amberAccent,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
 
                       // RATING SUMMARY
                       Row(
@@ -554,6 +678,194 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                             child: const Text('Submit'),
                           ),
                         ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Screen to claim THIS specific business
+class ClaimBusinessScreen extends StatefulWidget {
+  final Map<String, dynamic> company;
+
+  const ClaimBusinessScreen({super.key, required this.company});
+
+  @override
+  State<ClaimBusinessScreen> createState() => _ClaimBusinessScreenState();
+}
+
+class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
+  final TextEditingController _evidenceController = TextEditingController();
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _evidenceController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submitClaim() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              Text('You must be logged in to claim a business.'),
+        ),
+      );
+      return;
+    }
+
+    if (_evidenceController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Please describe how you are connected to this business.'),
+        ),
+      );
+      return;
+    }
+
+    final companyId = widget.company['id'];
+
+    try {
+      setState(() {
+        _submitting = true;
+      });
+
+      await EventTracker.trackCompanyEvent(
+        companyId: companyId.toString(),
+        eventType: 'claim_submit',
+        meta: {'source': 'detail_screen'},
+      );
+
+      await supabase.from('business_claims').insert({
+        'company_id': companyId,
+        'claimant_profile_id': user.id,
+        'evidence': _evidenceController.text.trim(),
+        // status defaults to 'pending' in DB
+      });
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Claim submitted. We will review it and get back to you.'),
+        ),
+      );
+
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error submitting claim: $e'),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _submitting = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = widget.company['name']?.toString() ?? 'Business';
+
+    return Scaffold(
+      body: HiveBackground(
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 600),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.6),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(
+                              Icons.arrow_back,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Claim $name',
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Tell us how you are connected to "$name". '
+                        'For example: your role, business email, website, social media, or other proof that you represent this business.',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 13,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: _evidenceController,
+                        maxLines: 5,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: bhiveInputDecoration(
+                          'Your explanation',
+                          hint:
+                              'Example: "I am the owner. My official email is info@mybusiness.co.za and our website is www.mybusiness.co.za."',
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      ElevatedButton.icon(
+                        onPressed: _submitting ? null : _submitClaim,
+                        icon: _submitting
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(Icons.how_to_reg),
+                        label: Padding(
+                          padding:
+                              const EdgeInsets.symmetric(vertical: 10),
+                          child: Text(
+                            _submitting
+                                ? 'Submitting...'
+                                : 'Submit Claim',
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                        ),
                       ),
                     ],
                   ),
