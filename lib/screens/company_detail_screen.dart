@@ -140,55 +140,67 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
   // CALL
   // -----------------------------------------
   Future<void> _callCompany(String? phone) async {
-    await _logContact('call');
-
-    final id = widget.company['id'].toString();
-    await EventTracker.trackCompanyEvent(
-      companyId: id,
-      eventType: 'call',
-      meta: {'phone': phone ?? '', 'source': 'detail'},
-    );
-    AnalyticsService.trackCompanyAction(id, 'call');
-
     if (phone == null || phone.trim().isEmpty) {
       if (!mounted) return;
-      return _snack('No phone number available.');
+      _snack('No phone number available.');
+      return;
     }
 
     final uri = Uri(scheme: 'tel', path: phone.trim());
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri);
-    } else {
+
+    // IMPORTANT: launch first, no awaits before this
+    final launched = await launchUrl(uri);
+
+    if (!launched) {
+      if (!mounted) return;
       _snack('Could not open phone app.');
+      return;
     }
+
+    // Fire-and-forget logging AFTER launch
+    _logContact('call');
+    final id = widget.company['id'].toString();
+    EventTracker.trackCompanyEvent(
+      companyId: id,
+      eventType: 'call',
+      meta: {'phone': phone, 'source': 'detail'},
+    );
+    AnalyticsService.trackCompanyAction(id, 'call');
   }
 
   // -----------------------------------------
   // WHATSAPP
   // -----------------------------------------
   Future<void> _whatsappCompany(String? phone) async {
-    await _logContact('whatsapp');
-
-    final id = widget.company['id'].toString();
-    await EventTracker.trackCompanyEvent(
-      companyId: id,
-      eventType: 'whatsapp',
-      meta: {'phone': phone ?? '', 'source': 'detail'},
-    );
-
     if (phone == null || phone.trim().isEmpty) {
       if (!mounted) return;
-      return _snack('No phone number available.');
+      _snack('No phone number available.');
+      return;
     }
 
     final clean = phone.replaceAll(' ', '');
     final uri = Uri.parse('https://wa.me/$clean');
 
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else {
+    // IMPORTANT: launch first, no awaits before this
+    final launched = await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+    );
+
+    if (!launched) {
+      if (!mounted) return;
       _snack('Could not open WhatsApp.');
+      return;
     }
+
+    // Fire-and-forget logging AFTER launch
+    _logContact('whatsapp');
+    final id = widget.company['id'].toString();
+    EventTracker.trackCompanyEvent(
+      companyId: id,
+      eventType: 'whatsapp',
+      meta: {'phone': phone, 'source': 'detail'},
+    );
   }
 
   // -----------------------------------------
@@ -196,19 +208,6 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
   // -----------------------------------------
   Future<void> _openDirections(
       String? address, String? city, String? url) async {
-    final id = widget.company['id'].toString();
-
-    await EventTracker.trackCompanyEvent(
-      companyId: id,
-      eventType: 'directions',
-      meta: {
-        'address': address ?? '',
-        'city': city ?? '',
-        'maps_url': url ?? ''
-      },
-    );
-    AnalyticsService.trackCompanyAction(id, 'directions');
-
     Uri? uri;
 
     if (url != null && url.trim().isNotEmpty) {
@@ -222,18 +221,42 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
           ? "$address, ${city ?? ''}"
           : (city ?? '');
 
-      if (query.trim().isEmpty) return _snack('No address available.');
+      if (query.trim().isEmpty) {
+        if (!mounted) return;
+        _snack('No address available.');
+        return;
+      }
 
       final encoded = Uri.encodeComponent(query);
       uri = Uri.parse(
-          'https://www.google.com/maps/search/?api=1&query=$encoded');
+        'https://www.google.com/maps/search/?api=1&query=$encoded',
+      );
     }
 
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else {
+    // IMPORTANT: launch first
+    final launched = await launchUrl(
+      uri!,
+      mode: LaunchMode.externalApplication,
+    );
+
+    if (!launched) {
+      if (!mounted) return;
       _snack('Could not open maps.');
+      return;
     }
+
+    // Log AFTER launch
+    final id = widget.company['id'].toString();
+    EventTracker.trackCompanyEvent(
+      companyId: id,
+      eventType: 'directions',
+      meta: {
+        'address': address ?? '',
+        'city': city ?? '',
+        'maps_url': url ?? '',
+      },
+    );
+    AnalyticsService.trackCompanyAction(id, 'directions');
   }
 
   // -----------------------------------------

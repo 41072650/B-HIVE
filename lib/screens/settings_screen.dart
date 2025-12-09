@@ -10,6 +10,7 @@ import '../auth_gate.dart';
 // 👇 same folder, so no "../"
 import 'privacy_policy_screen.dart';
 import 'terms_of_service_screen.dart';
+import 'admin_claims_screen.dart'; // NEW: admin claims screen
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -25,6 +26,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Privacy flags (stored in profiles table)
   bool _showProfilePublic = true;
   bool _allowContact = true;
+
+  // Admin flag (from profiles.is_admin)
+  bool _isAdmin = false;
 
   // Local-only selections (for now)
   String _theme = 'Dark';
@@ -49,7 +53,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final data = await supabase
           .from('profiles')
-          .select('show_profile_public, allow_contact')
+          .select('show_profile_public, allow_contact, is_admin') // 👈 include is_admin
           .eq('id', user.id)
           .maybeSingle();
 
@@ -59,6 +63,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _loading = false;
         _showProfilePublic = (data?['show_profile_public'] as bool?) ?? true;
         _allowContact = (data?['allow_contact'] as bool?) ?? true;
+        _isAdmin = (data?['is_admin'] as bool?) ?? false; // 👈 set admin flag
       });
     } catch (e) {
       if (!mounted) return;
@@ -510,8 +515,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         const SizedBox(height: 8),
 
-                        // Removed Change Email tile here
-
                         ListTile(
                           leading: const Icon(Icons.lock, color: Colors.white),
                           title: const Text(
@@ -669,6 +672,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           onTap: _contactSupport,
                         ),
 
+                        // ────────────── ADMIN / DEV TOOLS ──────────────
+                        if (_isAdmin) ...[
+                          const SizedBox(height: 20),
+                          const Text(
+                            "Developer / Admin",
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Colors.white70,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          ListTile(
+                            leading: const Icon(Icons.admin_panel_settings,
+                                color: Colors.amber),
+                            title: const Text(
+                              "Review business claims",
+                              style: TextStyle(color: Colors.white),
+                            ),
+                            subtitle: const Text(
+                              "Approve or reject ownership claims",
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const AdminClaimsScreen(),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+
                         const SizedBox(height: 20),
 
                         // ────────────── LOGOUT ──────────────
@@ -689,4 +725,4 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-////Test
+// //Test
