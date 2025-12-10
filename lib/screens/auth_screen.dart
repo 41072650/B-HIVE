@@ -8,7 +8,9 @@ import 'privacy_policy_screen.dart';
 import 'terms_of_service_screen.dart';
 
 class AuthScreen extends StatefulWidget {
-  const AuthScreen({super.key});
+  final VoidCallback? onContinueAsGuest; // 👈 callback for guest mode
+
+  const AuthScreen({super.key, this.onContinueAsGuest});
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -172,8 +174,7 @@ class _AuthScreenState extends State<AuthScreen> {
                               ),
                             ),
                             validator: (value) {
-                              if (value == null ||
-                                  value.trim().isEmpty) {
+                              if (value == null || value.trim().isEmpty) {
                                 return 'Please enter your email';
                               }
                               if (!value.contains('@')) {
@@ -200,8 +201,7 @@ class _AuthScreenState extends State<AuthScreen> {
                               ),
                             ),
                             validator: (value) {
-                              if (value == null ||
-                                  value.trim().isEmpty) {
+                              if (value == null || value.trim().isEmpty) {
                                 return 'Please enter your password';
                               }
                               if (value.trim().length < 6) {
@@ -215,8 +215,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             TextFormField(
                               controller: _confirmPasswordController,
                               obscureText: true,
-                              style:
-                                  const TextStyle(color: Colors.white),
+                              style: const TextStyle(color: Colors.white),
                               decoration: const InputDecoration(
                                 labelText: 'Confirm Password',
                                 labelStyle:
@@ -263,7 +262,6 @@ class _AuthScreenState extends State<AuthScreen> {
 
                     const SizedBox(height: 16),
 
-                    // 🔐 Legal text + links
                     const Text(
                       'By continuing, you agree to our:',
                       style: TextStyle(
@@ -313,6 +311,66 @@ class _AuthScreenState extends State<AuthScreen> {
                             ? "Don't have an account? Sign up"
                             : "Already have an account? Sign in",
                       ),
+                    ),
+
+                    // 🔽 BIG, VISIBLE GUEST SECTION
+                    const SizedBox(height: 16),
+                    Row(
+                      children: const [
+                        Expanded(
+                          child: Divider(
+                            color: Colors.white24,
+                            thickness: 1,
+                          ),
+                        ),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 8.0),
+                          child: Text(
+                            'OR',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Divider(
+                            color: Colors.white24,
+                            thickness: 1,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Colors.amberAccent),
+                          foregroundColor: Colors.amberAccent,
+                          padding:
+                              const EdgeInsets.symmetric(vertical: 12),
+                          textStyle: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        onPressed: () {
+                          // null-safe call of callback
+                          widget.onContinueAsGuest?.call();
+                        },
+                        child: const Text('CONTINUE AS GUEST'),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'No signup required – quick app preview.',
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 11,
+                      ),
+                      textAlign: TextAlign.center,
                     ),
                   ],
                 ),

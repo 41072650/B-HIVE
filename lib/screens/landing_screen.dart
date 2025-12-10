@@ -9,7 +9,13 @@ import 'business_profile_screen.dart';
 import 'jobs_screen.dart'; // 👈 NEW
 
 class LandingScreen extends StatefulWidget {
-  const LandingScreen({super.key});
+  /// If true, the user is browsing as a guest (no Supabase session).
+  final bool isGuest;
+
+  const LandingScreen({
+    super.key,
+    this.isGuest = false,
+  });
 
   @override
   State<LandingScreen> createState() => _LandingScreenState();
@@ -26,7 +32,11 @@ class _LandingScreenState extends State<LandingScreen> {
   @override
   void initState() {
     super.initState();
-    _loadBusinessMode();
+
+    // ⚠️ In guest mode we do NOT touch Supabase at all
+    if (!widget.isGuest) {
+      _loadBusinessMode();
+    }
   }
 
   Future<void> _loadBusinessMode() async {
@@ -67,9 +77,57 @@ class _LandingScreenState extends State<LandingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // ----------------------------
-    // TAB SCREENS
-    // ----------------------------
+    // ------------------------------------------------
+    // GUEST MODE: fewer tabs, no profile / business
+    // ------------------------------------------------
+    if (widget.isGuest) {
+      // Tabs visible to guests
+      final List<Widget> guestTabs = [
+        // 0: Home (companies list)
+        CompanyListScreen(key: _companyListKey),
+
+        // 1: Jobs (read-only style)
+        JobsScreen(isBusiness: false),
+      ];
+
+      final List<BottomNavigationBarItem> guestItems = const [
+        BottomNavigationBarItem(
+          icon: Icon(Icons.home_rounded),
+          label: 'Home',
+        ),
+        BottomNavigationBarItem(
+          icon: Icon(Icons.work_rounded),
+          label: 'Jobs',
+        ),
+      ];
+
+      int currentIndex = _selectedIndex;
+      if (currentIndex >= guestTabs.length) {
+        currentIndex = guestTabs.length - 1;
+      }
+
+      return Scaffold(
+        extendBodyBehindAppBar: true,
+        body: IndexedStack(
+          index: currentIndex,
+          children: guestTabs,
+        ),
+        bottomNavigationBar: BottomNavigationBar(
+          currentIndex: currentIndex,
+          onTap: _onTabTapped,
+          backgroundColor: const Color.fromARGB(255, 10, 10, 10),
+          selectedItemColor: const Color.fromARGB(255, 241, 178, 70),
+          unselectedItemColor: Colors.white60,
+          showUnselectedLabels: true,
+          type: BottomNavigationBarType.fixed,
+          items: guestItems,
+        ),
+      );
+    }
+
+    // ------------------------------------------------
+    // NORMAL LOGGED-IN MODE (existing behaviour)
+    // ------------------------------------------------
     final List<Widget> tabs = [
       // 0: Home (companies list)
       CompanyListScreen(key: _companyListKey),
@@ -97,9 +155,6 @@ class _LandingScreenState extends State<LandingScreen> {
       ),
     ];
 
-    // ----------------------------
-    // BOTTOM NAV ITEMS
-    // ----------------------------
     final List<BottomNavigationBarItem> items = [
       const BottomNavigationBarItem(
         icon: Icon(Icons.home_rounded),
@@ -125,9 +180,6 @@ class _LandingScreenState extends State<LandingScreen> {
       ),
     ];
 
-    // ----------------------------
-    // FIX OUT-OF-RANGE INDEX
-    // ----------------------------
     int currentIndex = _selectedIndex;
     if (currentIndex >= tabs.length) {
       currentIndex = tabs.length - 1;
@@ -135,12 +187,10 @@ class _LandingScreenState extends State<LandingScreen> {
 
     return Scaffold(
       extendBodyBehindAppBar: true,
-
       body: IndexedStack(
         index: currentIndex,
         children: tabs,
       ),
-
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: currentIndex,
         onTap: _onTabTapped,
