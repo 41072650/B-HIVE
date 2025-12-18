@@ -6,13 +6,19 @@ import '../widgets/hive_background.dart';
 import '../supabase_client.dart';
 
 class BusinessStatsScreen extends StatefulWidget {
-  const BusinessStatsScreen({super.key});
+  /// Optional: open stats already focused on a specific business.
+  final String? initialCompanyId;
+
+  const BusinessStatsScreen({
+    super.key,
+    this.initialCompanyId,
+  });
 
   @override
-  State<BusinessStatsScreen> createState() => _BusinessStatsScreenState();
+  State<BusinessStatsScreen> createState() => BusinessStatsScreenState();
 }
 
-class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
+class BusinessStatsScreenState extends State<BusinessStatsScreen> {
   bool _loading = true;
   String? _error;
 
@@ -44,7 +50,13 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     _loadInitialData();
   }
 
+  /// ✅ Call this from LandingScreen after a business is created/updated.
+  Future<void> reloadStats() async {
+    await _loadInitialData();
+  }
+
   Future<void> _loadInitialData() async {
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -52,6 +64,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
 
     final user = supabase.auth.currentUser;
     if (user == null) {
+      if (!mounted) return;
       setState(() {
         _loading = false;
         _error = 'You must be logged in to view business stats.';
@@ -61,13 +74,21 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
 
     try {
       // 1) Load companies owned by this user
-      final companies = await supabase
+      final companiesRes = await supabase
           .from('companies')
           .select()
           .eq('owner_id', user.id)
           .order('inserted_at', ascending: false);
 
-      if (companies == null || companies.isEmpty) {
+      final companies = (companiesRes is List)
+          ? companiesRes
+              .map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map))
+              .toList()
+          : <Map<String, dynamic>>[];
+
+      if (!mounted) return;
+
+      if (companies.isEmpty) {
         setState(() {
           _loading = false;
           _companies = [];
@@ -76,17 +97,24 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         return;
       }
 
-      final firstCompany = (companies.first as Map<String, dynamic>);
+      // Prefer initialCompanyId if provided
+      Map<String, dynamic> selected = companies.first;
+      final preferredId = widget.initialCompanyId;
+      if (preferredId != null && preferredId.isNotEmpty) {
+        final match = companies.where((c) => c['id']?.toString() == preferredId);
+        if (match.isNotEmpty) {
+          selected = match.first;
+        }
+      }
 
       setState(() {
-        _companies = companies
-            .map<Map<String, dynamic>>((e) => e as Map<String, dynamic>)
-            .toList();
-        _selectedCompany = firstCompany;
+        _companies = companies;
+        _selectedCompany = selected;
       });
 
-      await _loadStatsForCompany(firstCompany['id'].toString());
+      await _loadStatsForCompany(selected['id'].toString());
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _loading = false;
         _error = 'Error loading companies: $e';
@@ -165,6 +193,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
   }
 
   Future<void> _loadStatsForCompany(String companyId) async {
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -184,8 +213,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     try {
       final now = DateTime.now();
       final from30 = now.subtract(const Duration(days: 30));
-      final from30DateOnly =
-          DateTime(from30.year, from30.month, from30.day); // strip time
+      final from30DateOnly = DateTime(from30.year, from30.month, from30.day);
       final from30Str = from30DateOnly.toIso8601String();
 
       // ---- 1) Get aggregated daily stats (company_daily_stats) ----
@@ -201,8 +229,8 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       int totalDirections = 0;
       final Map<DateTime, int> viewsPerDay = {};
 
-      final last7Start =
-          DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6));
+      final last7Start = DateTime(now.year, now.month, now.day)
+          .subtract(const Duration(days: 6));
 
       if (dailyStats is List) {
         for (final row in dailyStats) {
@@ -210,13 +238,15 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
           final dateStr = map['date']?.toString();
           if (dateStr == null) continue;
 
-          // Postgres date often comes as 'YYYY-MM-DD'
           final date = DateTime.parse(dateStr);
 
-          final views = (map['views'] is num) ? (map['views'] as num).toInt() : 0;
-          final calls = (map['calls'] is num) ? (map['calls'] as num).toInt() : 0;
-          final directions =
-              (map['directions'] is num) ? (map['directions'] as num).toInt() : 0;
+          final views =
+              (map['views'] is num) ? (map['views'] as num).toInt() : 0;
+          final calls =
+              (map['calls'] is num) ? (map['calls'] as num).toInt() : 0;
+          final directions = (map['directions'] is num)
+              ? (map['directions'] as num).toInt()
+              : 0;
 
           totalViews += views;
           totalCalls += calls;
@@ -246,7 +276,6 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
             )
             .toList();
 
-        // Build counts + hourly buckets + whatsapp/share counts
         final Map<int, int> hourlyCounts = {};
         for (final map in events) {
           final type = (map['event_type'] ?? '').toString();
@@ -260,19 +289,20 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
           final createdAtStr = map['created_at']?.toString();
           DateTime createdAt;
           try {
-            createdAt =
-                DateTime.parse(createdAtStr ?? DateTime.now().toIso8601String())
-                    .toLocal();
+            createdAt = DateTime.parse(
+                    createdAtStr ?? DateTime.now().toIso8601String())
+                .toLocal();
           } catch (_) {
             createdAt = DateTime.now();
           }
+
           final hour = createdAt.hour;
           hourlyCounts[hour] = (hourlyCounts[hour] ?? 0) + 1;
         }
 
-        // Build top peak hours (up to 3)
         final sortedHours = hourlyCounts.entries.toList()
           ..sort((a, b) => b.value.compareTo(a.value));
+
         final top = <_HourBucket>[];
         for (var i = 0; i < sortedHours.length && i < 3; i++) {
           top.add(_HourBucket(hour: sortedHours[i].key, count: sortedHours[i].value));
@@ -318,6 +348,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         myActions: actionsTotal,
       );
 
+      if (!mounted) return;
       setState(() {
         _loading = false;
         _viewsLast30 = totalViews;
@@ -325,9 +356,9 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         _eventCounts = counts;
         _last7DaysViews = last7;
         _leads = leads;
-        // _topHours & benchmark fields already updated above
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _loading = false;
         _error = 'Error loading stats: $e';
@@ -344,6 +375,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
   }) async {
     try {
       if (category == null || category.isEmpty) {
+        if (!mounted) return;
         setState(() {
           _peerCount = 0;
           _peerAvgViews = null;
@@ -354,13 +386,11 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         return;
       }
 
-      // 1) Find peer companies in same category
-      final peersRes = await supabase
-          .from('companies')
-          .select('id')
-          .eq('category', category);
+      final peersRes =
+          await supabase.from('companies').select('id').eq('category', category);
 
       if (peersRes is! List || peersRes.isEmpty) {
+        if (!mounted) return;
         setState(() {
           _peerCount = 0;
           _peerAvgViews = null;
@@ -375,13 +405,11 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       for (final row in peersRes) {
         final map = row as Map<String, dynamic>;
         final id = map['id']?.toString();
-        if (id != null && id.isNotEmpty) {
-          peerIds.add(id);
-        }
+        if (id != null && id.isNotEmpty) peerIds.add(id);
       }
 
       if (peerIds.length < 3) {
-        // Not enough peers to make a meaningful percentile
+        if (!mounted) return;
         setState(() {
           _peerCount = peerIds.length;
           _peerAvgViews = null;
@@ -392,35 +420,35 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         return;
       }
 
-      // 2) Load 30-day stats for all peers
       final statsRes = await supabase
           .from('company_daily_stats')
           .select('company_id, views, calls, directions, date')
           .gte('date', from30.toIso8601String())
           .filter('company_id', 'in', peerIds.toList());
 
-      if (statsRes is! List) {
-        return;
-      }
+      if (statsRes is! List) return;
 
-      // Aggregate per company
       final Map<String, _CompanyAgg> aggByCompany = {};
       for (final row in statsRes) {
         final map = row as Map<String, dynamic>;
         final cid = map['company_id']?.toString();
         if (cid == null) continue;
 
-        final views = (map['views'] is num) ? (map['views'] as num).toInt() : 0;
-        final calls = (map['calls'] is num) ? (map['calls'] as num).toInt() : 0;
-        final directions =
-            (map['directions'] is num) ? (map['directions'] as num).toInt() : 0;
+        final views =
+            (map['views'] is num) ? (map['views'] as num).toInt() : 0;
+        final calls =
+            (map['calls'] is num) ? (map['calls'] as num).toInt() : 0;
+        final directions = (map['directions'] is num)
+            ? (map['directions'] as num).toInt()
+            : 0;
 
         final agg = aggByCompany.putIfAbsent(cid, () => _CompanyAgg());
         agg.views += views;
-        agg.actions += calls + directions; // only "hard" actions
+        agg.actions += calls + directions;
       }
 
       if (aggByCompany.isEmpty) {
+        if (!mounted) return;
         setState(() {
           _peerCount = 0;
           _peerAvgViews = null;
@@ -452,22 +480,19 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       final myViewsDouble = myViews.toDouble();
       final myConv = myViews == 0 ? 0.0 : myActions / myViewsDouble;
 
-      // Percentile: share of peers with <= my metric
       int viewsBetterOrEqual = 0;
       int convBetterOrEqual = 0;
+
       for (int i = 0; i < peerViewsList.length; i++) {
-        if (peerViewsList[i] <= myViewsDouble) {
-          viewsBetterOrEqual++;
-        }
-        if (peerConvList[i] <= myConv) {
-          convBetterOrEqual++;
-        }
+        if (peerViewsList[i] <= myViewsDouble) viewsBetterOrEqual++;
+        if (peerConvList[i] <= myConv) convBetterOrEqual++;
       }
 
       final peerCount = peerViewsList.length;
       final avgViews = sumViews / peerCount;
       final avgConv = sumConv / peerCount;
 
+      if (!mounted) return;
       setState(() {
         _peerCount = peerCount;
         _peerAvgViews = avgViews;
@@ -476,7 +501,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         _conversionPercentile = (convBetterOrEqual / peerCount) * 100.0;
       });
     } catch (_) {
-      // If anything fails, silently skip benchmark (we don't want to break stats)
+      // silently skip benchmark
     }
   }
 
@@ -484,16 +509,12 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       List<Map<String, dynamic>> events) async {
     if (events.isEmpty) return [];
 
-    // Collect user_ids from events
     final userIds = <String>{};
     for (final ev in events) {
       final uid = ev['user_id']?.toString();
-      if (uid != null && uid.isNotEmpty) {
-        userIds.add(uid);
-      }
+      if (uid != null && uid.isNotEmpty) userIds.add(uid);
     }
 
-    // Load profiles for those leads
     final Map<String, String> nameByUserId = {};
     if (userIds.isNotEmpty) {
       final profilesRes = await supabase
@@ -512,16 +533,15 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
       }
     }
 
-    // Map events → _LeadEvent list (timeline)
     final List<_LeadEvent> leads = [];
     for (final ev in events) {
       final type = (ev['event_type'] ?? '').toString();
       final createdAtStr = ev['created_at']?.toString();
       DateTime createdAt;
       try {
-        createdAt =
-            DateTime.parse(createdAtStr ?? DateTime.now().toIso8601String())
-                .toLocal();
+        createdAt = DateTime.parse(
+                createdAtStr ?? DateTime.now().toIso8601String())
+            .toLocal();
       } catch (_) {
         createdAt = DateTime.now();
       }
@@ -553,8 +573,6 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
   }
 
   _LeadQuality _computeLeadQuality(String type) {
-    // Simple scoring model:
-    // view = 1 (low), share/directions = 2 (medium), call/whatsapp = 3 (high)
     switch (type) {
       case 'call':
       case 'whatsapp':
@@ -641,19 +659,12 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     final directions = _eventCounts['directions'] ?? 0;
     final shares = _eventCounts['share'] ?? 0;
 
-    if (calls > 0) {
-      buffer.writeln('• You received $calls tap(s) on the Call button.');
-    }
-    if (whatsapp > 0) {
-      buffer.writeln('• You received $whatsapp WhatsApp tap(s).');
-    }
+    if (calls > 0) buffer.writeln('• You received $calls tap(s) on the Call button.');
+    if (whatsapp > 0) buffer.writeln('• You received $whatsapp WhatsApp tap(s).');
     if (directions > 0) {
-      buffer.writeln(
-          '• Directions to your business were opened $directions time(s).');
+      buffer.writeln('• Directions to your business were opened $directions time(s).');
     }
-    if (shares > 0) {
-      buffer.writeln('• Your profile was shared $shares time(s).');
-    }
+    if (shares > 0) buffer.writeln('• Your profile was shared $shares time(s).');
 
     if (calls == 0 && whatsapp == 0 && directions == 0 && shares == 0) {
       buffer.writeln(
@@ -666,7 +677,6 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // No AppBar – matches other main tabs
       body: HiveBackground(
         child: SafeArea(
           child: Padding(
@@ -720,10 +730,10 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         // Company selector row
         Row(
           children: [
-            Expanded(
+            const Expanded(
               child: Text(
                 'Stats for:',
-                style: const TextStyle(
+                style: TextStyle(
                   color: Colors.white70,
                   fontSize: 14,
                 ),
@@ -764,15 +774,13 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         ),
         const SizedBox(height: 12),
 
-        // Subscription status banner
         _buildSubscriptionBanner(isPaid),
         const SizedBox(height: 12),
 
         Expanded(
           child: SingleChildScrollView(
             child: Column(
-              children:
-                  isPaid ? _buildPaidDashboard() : _buildFreeDashboard(),
+              children: isPaid ? _buildPaidDashboard() : _buildFreeDashboard(),
             ),
           ),
         ),
@@ -798,9 +806,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                isPaid
-                    ? 'BHive Business — Verified'
-                    : 'BHive Business — Free plan',
+                isPaid ? 'BHive Business — Verified' : 'BHive Business — Free plan',
                 style: const TextStyle(
                   color: Colors.white,
                   fontWeight: FontWeight.bold,
@@ -840,10 +846,8 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
     );
   }
 
-  // Widgets shown when the company IS on a paid plan
   List<Widget> _buildPaidDashboard() {
     return [
-      // Summary cards row
       Row(
         children: [
           Expanded(
@@ -872,41 +876,25 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
         ],
       ),
       const SizedBox(height: 16),
-
-      // Conversion funnel
       _buildFunnelCard(),
       const SizedBox(height: 16),
-
-      // Actions breakdown
       _buildActionsBreakdownCard(),
       const SizedBox(height: 16),
-
-      // Views over last 7 days
       _buildViewsHistoryCard(),
       const SizedBox(height: 16),
-
-      // Peak activity times
       _buildPeakTimesCard(),
       const SizedBox(height: 16),
-
-      // Insights
       _buildInsightsCard(),
       const SizedBox(height: 16),
-
-      // Competitor benchmark
       _buildBenchmarkCard(),
       const SizedBox(height: 16),
-
-      // Leads timeline
       _buildLeadsCard(context),
       const SizedBox(height: 16),
     ];
   }
 
-  // Widgets shown when the company is on the FREE plan
   List<Widget> _buildFreeDashboard() {
     return [
-      // Only one basic stat
       Row(
         children: [
           Expanded(
@@ -1201,8 +1189,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
             yourValue: myViews.toStringAsFixed(0),
             avgValue: avgViews.toStringAsFixed(0),
             relativeText: _relative(myViews, avgViews),
-            percentile:
-                _viewsPercentile != null ? _viewsPercentile!.toStringAsFixed(0) : null,
+            percentile: _viewsPercentile?.toStringAsFixed(0),
           ),
           const SizedBox(height: 6),
           _BenchmarkRow(
@@ -1210,9 +1197,7 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
             yourValue: '${(myConv * 100).toStringAsFixed(1)}%',
             avgValue: '${(avgConv * 100).toStringAsFixed(1)}%',
             relativeText: _relative(myConv, avgConv),
-            percentile: _conversionPercentile != null
-                ? _conversionPercentile!.toStringAsFixed(0)
-                : null,
+            percentile: _conversionPercentile?.toStringAsFixed(0),
           ),
           const SizedBox(height: 8),
           const Text(
@@ -1235,7 +1220,6 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
             )
           : Column(
               children: [
-                // Preview only the first 5 leads on the stats screen
                 ListView.separated(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
@@ -1253,7 +1237,6 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // First row: action + time + quality chip
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
@@ -1318,8 +1301,6 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
                     );
                   },
                 ),
-
-                // “View all leads” CTA if there are more than 5
                 if (_leads.length > 5) ...[
                   const SizedBox(height: 8),
                   Align(
@@ -1331,9 +1312,9 @@ class _BusinessStatsScreenState extends State<BusinessStatsScreen> {
                           MaterialPageRoute(
                             builder: (_) => FullLeadsScreen(
                               leads: _leads,
-                              companyName: _selectedCompany?['name']
-                                      ?.toString() ??
-                                  'Your business',
+                              companyName:
+                                  _selectedCompany?['name']?.toString() ??
+                                      'Your business',
                             ),
                           ),
                         );
@@ -1715,8 +1696,7 @@ class FullLeadsScreen extends StatelessWidget {
                               children: [
                                 Expanded(
                                   child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
+                                    crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       Text(
                                         lead.actionLabel,

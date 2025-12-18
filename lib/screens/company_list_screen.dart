@@ -6,7 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import '../supabase_client.dart';
 import 'company_detail_screen.dart';
 import '../widgets/hive_background.dart';
-import '../Constants/category_map.dart'; // must contain: const Map<String, List<String>> kCategorySubcategories = {...};
+import '../Constants/category_map.dart'; // must contain: kCategorySubcategories
 
 enum CompanySort { newest, rating, name, closest }
 
@@ -19,6 +19,7 @@ class CompanyListScreen extends StatefulWidget {
 
 class CompanyListScreenState extends State<CompanyListScreen> {
   bool _loading = true;
+  String? _error;
   List<dynamic> _companies = [];
 
   String _searchQuery = "";
@@ -41,17 +42,31 @@ class CompanyListScreenState extends State<CompanyListScreen> {
   }
 
   Future<void> _loadCompanies() async {
-    setState(() => _loading = true);
-
-    final response = await supabase
-        .from('companies')
-        .select()
-        .order('inserted_at', ascending: false);
-
+    if (!mounted) return;
     setState(() {
-      _companies = response;
-      _loading = false;
+      _loading = true;
+      _error = null;
     });
+
+    try {
+      final response = await supabase
+          .from('companies')
+          .select()
+          .order('inserted_at', ascending: false);
+
+      if (!mounted) return;
+      setState(() {
+        _companies = (response as List?) ?? [];
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _companies = [];
+        _loading = false;
+        _error = 'Failed to load companies: $e';
+      });
+    }
   }
 
   // ─────────────── CATEGORY + SUBCATEGORY OPTIONS ───────────────
@@ -86,9 +101,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
   // ─────────────── HELPERS ───────────────
 
   DateTime _parseDate(dynamic v) {
-    if (v == null) {
-      return DateTime.fromMillisecondsSinceEpoch(0);
-    }
+    if (v == null) return DateTime.fromMillisecondsSinceEpoch(0);
     try {
       return DateTime.parse(v.toString());
     } catch (_) {
@@ -117,7 +130,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
   Future<void> _ensureLocation() async {
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -126,7 +139,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
         return;
       }
 
-      LocationPermission permission = await Geolocator.checkPermission();
+      var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
@@ -166,6 +179,8 @@ class CompanyListScreenState extends State<CompanyListScreen> {
     final query = _searchQuery.trim().toLowerCase();
 
     final filtered = _companies.where((company) {
+      if (company is! Map) return false;
+
       final name = (company['name'] ?? '').toString().toLowerCase();
       final category = (company['category'] ?? '').toString();
       final categoryLower = category.toLowerCase();
@@ -180,8 +195,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
           subLower.contains(query);
 
       final matchesCategory =
-          _selectedCategoryFilter == 'All' ||
-              category == _selectedCategoryFilter;
+          _selectedCategoryFilter == 'All' || category == _selectedCategoryFilter;
 
       final matchesSubcategory =
           _selectedSubcategory == null || subcategory == _selectedSubcategory;
@@ -191,50 +205,43 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
     // Sort – PAID BUSINESSES FIRST, then by selected sort mode
     filtered.sort((a, b) {
-      final aPaid = (a['is_paid'] == true) ? 1 : 0;
-      final bPaid = (b['is_paid'] == true) ? 1 : 0;
+      final aa = (a as Map)['is_paid'] == true ? 1 : 0;
+      final bb = (b as Map)['is_paid'] == true ? 1 : 0;
 
       // Paid first
-      if (aPaid != bPaid) {
-        return bPaid.compareTo(aPaid); // 1 before 0
-      }
+      if (aa != bb) return bb.compareTo(aa);
 
-      // Then apply normal sort inside each group
       switch (_sortBy) {
         case CompanySort.newest:
-          final da = _parseDate(a['inserted_at']);
-          final db = _parseDate(b['inserted_at']);
-          return db.compareTo(da); // newest first
+          final da = _parseDate((a as Map)['inserted_at']);
+          final db = _parseDate((b as Map)['inserted_at']);
+          return db.compareTo(da);
 
         case CompanySort.rating:
-          final ra = (a['rating_avg'] as num? ?? 0).toDouble();
-          final rb = (b['rating_avg'] as num? ?? 0).toDouble();
-          return rb.compareTo(ra); // highest rating first
+          final ra = (((a as Map)['rating_avg'] as num?) ?? 0).toDouble();
+          final rb = (((b as Map)['rating_avg'] as num?) ?? 0).toDouble();
+          return rb.compareTo(ra);
 
         case CompanySort.name:
-          final na = (a['name'] ?? '').toString().toLowerCase();
-          final nb = (b['name'] ?? '').toString().toLowerCase();
-          return na.compareTo(nb); // A–Z
+          final na = ((a as Map)['name'] ?? '').toString().toLowerCase();
+          final nb = ((b as Map)['name'] ?? '').toString().toLowerCase();
+          return na.compareTo(nb);
 
         case CompanySort.closest:
           final userLat = _userLat;
           final userLon = _userLon;
-          if (userLat == null || userLon == null) {
-            return 0; // no location → keep within group order
-          }
+          if (userLat == null || userLon == null) return 0;
 
-          final la = (a['latitude'] as num?)?.toDouble();
-          final loa = (a['longitude'] as num?)?.toDouble();
-          final lb = (b['latitude'] as num?)?.toDouble();
-          final lob = (b['longitude'] as num?)?.toDouble();
+          final la = (((a as Map)['latitude'] as num?)?.toDouble());
+          final loa = (((a as Map)['longitude'] as num?)?.toDouble());
+          final lb = (((b as Map)['latitude'] as num?)?.toDouble());
+          final lob = (((b as Map)['longitude'] as num?)?.toDouble());
 
-          if (la == null || loa == null || lb == null || lob == null) {
-            return 0;
-          }
+          if (la == null || loa == null || lb == null || lob == null) return 0;
 
           final da = _distanceKm(userLat, userLon, la, loa);
           final db = _distanceKm(userLat, userLon, lb, lob);
-          return da.compareTo(db); // closest first
+          return da.compareTo(db);
       }
     });
 
@@ -258,21 +265,15 @@ class CompanyListScreenState extends State<CompanyListScreen> {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: TextField(
-                  onChanged: (value) {
-                    setState(() {
-                      _searchQuery = value;
-                    });
-                  },
+                  onChanged: (value) => setState(() => _searchQuery = value),
                   style: const TextStyle(color: Colors.white),
                   decoration: InputDecoration(
                     hintText: "Search companies...",
                     hintStyle: const TextStyle(color: Colors.white70),
-                    prefixIcon:
-                        const Icon(Icons.search, color: Colors.white70),
+                    prefixIcon: const Icon(Icons.search, color: Colors.white70),
                     filled: true,
                     fillColor: Colors.black.withOpacity(0.4),
-                    contentPadding:
-                        const EdgeInsets.symmetric(vertical: 12),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 12),
                     enabledBorder: OutlineInputBorder(
                       borderSide: const BorderSide(color: Colors.white24),
                       borderRadius: BorderRadius.circular(12),
@@ -300,6 +301,27 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
               const SizedBox(height: 8),
 
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
+                    ),
+                    child: Text(
+                      _error!,
+                      style: const TextStyle(color: Colors.white70),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+
+              if (_error != null) const SizedBox(height: 8),
+
               // LIST + PULL-TO-REFRESH
               Expanded(
                 child: RefreshIndicator(
@@ -318,8 +340,6 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
   // Build the scrollable list used by RefreshIndicator
   Widget _buildCompanyList(List<dynamic> filteredCompanies) {
-    // AlwaysScrollableScrollPhysics lets you pull-to-refresh
-    // even if there are few or zero items.
     if (_loading) {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
@@ -356,11 +376,10 @@ class CompanyListScreenState extends State<CompanyListScreen> {
       padding: const EdgeInsets.only(top: 8),
       itemCount: filteredCompanies.length,
       itemBuilder: (context, index) {
-        final company = filteredCompanies[index] as Map<String, dynamic>;
-        final ratingAvg =
-            (company['rating_avg'] as num? ?? 0).toDouble();
-        final ratingCount =
-            (company['rating_count'] as int? ?? 0);
+        final company = Map<String, dynamic>.from(filteredCompanies[index] as Map);
+
+        final ratingAvg = ((company['rating_avg'] as num?) ?? 0).toDouble();
+        final ratingCount = (company['rating_count'] as int?) ?? 0;
         final isPaid = company['is_paid'] == true;
 
         final logoUrl = (company['logo_url'] ?? '') as String?;
@@ -384,7 +403,6 @@ class CompanyListScreenState extends State<CompanyListScreen> {
           subtitleText += ' • ${distanceKm.toStringAsFixed(1)} km away';
         }
 
-        // Decide leading avatar (logo or generic)
         final Widget leadingAvatar;
         if (logoUrl != null && logoUrl.isNotEmpty) {
           leadingAvatar = CircleAvatar(
@@ -398,7 +416,6 @@ class CompanyListScreenState extends State<CompanyListScreen> {
           );
         }
 
-        // GOLD OUTLINE FOR PAID COMPANIES
         return Container(
           margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
@@ -414,7 +431,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
           child: ListTile(
             leading: leadingAvatar,
             title: Text(
-              company['name'] ?? '',
+              (company['name'] ?? '').toString(),
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.w600,
@@ -424,8 +441,6 @@ class CompanyListScreenState extends State<CompanyListScreen> {
               subtitleText,
               style: const TextStyle(color: Colors.white70),
             ),
-
-            // VERIFIED BADGE + RATING IN TRAILING AREA
             trailing: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -467,17 +482,16 @@ class CompanyListScreenState extends State<CompanyListScreen> {
               ],
             ),
             onTap: () async {
-              final changed = await Navigator.push<bool>(
+              await Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => CompanyDetailScreen(
-                    company: company,
-                  ),
+                  builder: (_) => CompanyDetailScreen(company: company),
                 ),
               );
 
-              if (changed == true) {
-                _loadCompanies();
+              // ✅ Always refresh when returning so rating updates immediately
+              if (mounted) {
+                await _loadCompanies();
               }
             },
           ),
@@ -623,6 +637,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
                 await _ensureLocation();
               }
 
+              if (!mounted) return;
               setState(() {
                 _sortBy = value;
               });

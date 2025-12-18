@@ -45,5 +45,40 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+		<!-- ✅ Image Picker / Photos -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>BHive needs access to your photo library so you can upload a logo and business images.</string>
+
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>BHive needs permission to save images to your photo library when needed.</string>
+
+	<!-- ✅ (Only needed if you ever allow taking a photo with the camera) -->
+	<key>NSCameraUsageDescription</key>
+	<string>BHive needs access to your camera so you can take and upload business photos.</string>
+
+	<!-- ✅ Location (for “Closest” sorting + maps features) -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>BHive uses your location to show nearby businesses and sort results by distance.</string>
+
+	<!-- ✅ Optional: if you ever request location in background (you currently do NOT) -->
+	<!--
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>BHive uses your location to show nearby businesses even when the app is not open.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
+	-->
+
+	<!-- ✅ Allow opening external links (WhatsApp, Google Maps, etc.) -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>whatsapp</string>
+		<string>tel</string>
+		<string>mailto</string>
+		<string>maps</string>
+		<string>comgooglemaps</string>
+	</array>
+
 </dict>
 </plist>

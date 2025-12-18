@@ -23,9 +23,26 @@ class CompanyDetailScreen extends StatefulWidget {
 class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
   double _userRating = 0;
 
+  // ✅ NEW: Keep rating summary in state so it can refresh instantly
+  double _ratingAvg = 0.0;
+  int _ratingCount = 0;
+
+  // ✅ ADS
+  bool _adsLoading = false;
+  String? _adsError;
+  final List<String> _adSignedUrls = [];
+
   @override
   void initState() {
     super.initState();
+
+    // ✅ init rating summary from incoming company map
+    _ratingAvg = (widget.company['rating_avg'] is num)
+        ? (widget.company['rating_avg'] as num).toDouble()
+        : 0.0;
+    _ratingCount = (widget.company['rating_count'] is num)
+        ? (widget.company['rating_count'] as num).toInt()
+        : 0;
 
     // Track view
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -38,6 +55,301 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
     });
 
     _loadMyRating();
+
+    // ✅ Always attempt to load ads so everyone can view them
+    _loadCompanyAds();
+  }
+
+  // ✅ NEW: Refresh rating summary after submit so UI updates immediately
+  Future<void> _refreshCompanyRatingSummary() async {
+    try {
+      final id = widget.company['id'];
+      final data = await supabase
+          .from('companies')
+          .select('rating_avg, rating_count')
+          .eq('id', id)
+          .maybeSingle();
+
+      if (!mounted || data == null) return;
+
+      setState(() {
+        _ratingAvg = (data['rating_avg'] is num)
+            ? (data['rating_avg'] as num).toDouble()
+            : 0.0;
+        _ratingCount = (data['rating_count'] is num)
+            ? (data['rating_count'] as num).toInt()
+            : 0;
+      });
+    } catch (_) {}
+  }
+
+  // ✅ ADS: Load all ads from storage path: {companyId}/ads/
+  Future<void> _loadCompanyAds() async {
+    final companyId = widget.company['id']?.toString();
+    if (companyId == null || companyId.isEmpty) return;
+
+    setState(() {
+      _adsLoading = true;
+      _adsError = null;
+      _adSignedUrls.clear();
+    });
+
+    try {
+      // List objects under: {companyId}/ads/
+      final objects = await supabase.storage.from('company-ads').list(
+            path: '$companyId/ads',
+          );
+
+      // Filter only image files
+      final imageObjects = objects.where((o) {
+        final name = (o.name ?? '').toLowerCase();
+        return name.endsWith('.png') ||
+            name.endsWith('.jpg') ||
+            name.endsWith('.jpeg') ||
+            name.endsWith('.webp');
+      }).toList();
+
+      // Newest first (best effort: by name if timestamp in filename)
+      imageObjects.sort((a, b) => (b.name ?? '').compareTo(a.name ?? ''));
+
+      // Create signed URLs (1 hour)
+      final urls = <String>[];
+      for (final o in imageObjects) {
+        final filePath = '$companyId/ads/${o.name}';
+        final signedUrl = await supabase.storage
+            .from('company-ads')
+            .createSignedUrl(filePath, 60 * 60);
+        urls.add(signedUrl);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _adSignedUrls.addAll(urls);
+        _adsLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _adsLoading = false;
+        _adsError = 'Failed to load ads: $e';
+      });
+    }
+  }
+
+  // ✅ Instagram-style full screen viewer (swipe + zoom)
+  void _openAdPreview(int initialIndex) {
+    final companyId = widget.company['id']?.toString() ?? 'company';
+
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Close',
+      barrierColor: Colors.black.withOpacity(0.95),
+      pageBuilder: (_, __, ___) {
+        final controller = PageController(initialPage: initialIndex);
+
+        return SafeArea(
+          child: Scaffold(
+            backgroundColor: Colors.transparent,
+            body: Stack(
+              children: [
+                PageView.builder(
+                  controller: controller,
+                  itemCount: _adSignedUrls.length,
+                  itemBuilder: (context, index) {
+                    final url = _adSignedUrls[index];
+                    final heroTag = 'ad_$companyId$index';
+
+                    return Center(
+                      child: Hero(
+                        tag: heroTag,
+                        child: InteractiveViewer(
+                          minScale: 1.0,
+                          maxScale: 4.0,
+                          child: Image.network(
+                            url,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => const Padding(
+                              padding: EdgeInsets.all(24),
+                              child: Center(
+                                child: Text(
+                                  'Could not load image.',
+                                  style: TextStyle(color: Colors.white70),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+
+                // Close button
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ),
+
+                // Simple indicator
+                if (_adSignedUrls.length > 1)
+                  Positioned(
+                    bottom: 18,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.35),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: StatefulBuilder(
+                          builder: (context, setInner) {
+                            int current = initialIndex;
+
+                            controller.addListener(() {
+                              final p = controller.page;
+                              if (p == null) return;
+                              final idx = p.round();
+                              if (idx != current) {
+                                current = idx;
+                                setInner(() {});
+                              }
+                            });
+
+                            return Text(
+                              '${current + 1} / ${_adSignedUrls.length}',
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // ✅ ADS GRID (to be shown under "Rate this company" section)
+  Widget _buildAdsSection() {
+    final bool isPaid = widget.company['is_paid'] == true;
+    final companyId = widget.company['id']?.toString() ?? 'company';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            const Text(
+              'Advertisements',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(width: 8),
+            if (isPaid)
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.amberAccent),
+                ),
+                child: const Text(
+                  'Sponsored',
+                  style: TextStyle(
+                    color: Colors.amberAccent,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (_adsLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 10),
+            child: Center(
+              child: CircularProgressIndicator(color: Colors.white),
+            ),
+          )
+        else if (_adsError != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              _adsError!,
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+          )
+        else if (_adSignedUrls.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 8),
+            child: Text(
+              'No ads available yet.',
+              style: TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+          )
+        else
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _adSignedUrls.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+              childAspectRatio: 1,
+            ),
+            itemBuilder: (context, i) {
+              final url = _adSignedUrls[i];
+              final heroTag = 'ad_$companyId$i';
+
+              return GestureDetector(
+                onTap: () => _openAdPreview(i),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    color: Colors.white10,
+                    child: Hero(
+                      tag: heroTag,
+                      child: Image.network(
+                        url,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const Center(
+                          child:
+                              Icon(Icons.broken_image, color: Colors.white54),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        const SizedBox(height: 12),
+      ],
+    );
   }
 
   // -----------------------------------------
@@ -88,7 +400,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
   }
 
   // -----------------------------------------
-  // Submit rating
+  // Submit rating  ✅ FIXED: use onConflict so it updates instead of duplicate-key error
   // -----------------------------------------
   Future<void> _submitRating() async {
     if (_userRating <= 0) return;
@@ -111,23 +423,27 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
         meta: {'rating': _userRating},
       );
 
-      await supabase.from('ratings').upsert({
-        'company_id': id,
-        'user_id': user.id,
-        'rating': _userRating,
-      });
+      await supabase.from('ratings').upsert(
+        {
+          'company_id': id,
+          'user_id': user.id,
+          'rating': _userRating,
+        },
+        onConflict: 'user_id,company_id',
+      );
 
       await supabase.rpc('update_company_rating', params: {
         'company_id_input': id.toString(),
       });
+
+      // ✅ NEW: refresh summary so the UI updates instantly
+      await _refreshCompanyRatingSummary();
 
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Rating saved.')),
       );
-
-      Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -206,8 +522,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
   // -----------------------------------------
   // MAPS / DIRECTIONS
   // -----------------------------------------
-  Future<void> _openDirections(
-      String? address, String? city, String? url) async {
+  Future<void> _openDirections(String? address, String? city, String? url) async {
     Uri? uri;
 
     if (url != null && url.trim().isNotEmpty) {
@@ -290,8 +605,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
   // -----------------------------------------
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   void _openClaimScreen(Map<String, dynamic> company) {
@@ -310,18 +624,11 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
   Widget build(BuildContext context) {
     final c = widget.company;
 
-    final ratingAvg = (c['rating_avg'] is num)
-        ? (c['rating_avg'] as num).toDouble()
-        : 0.0;
-    final ratingCount =
-        (c['rating_count'] is num) ? c['rating_count'] as int : 0;
-
-    // NEW: pull logo_url for header avatar
+    // pull logo_url for header avatar
     final String logoUrl = (c['logo_url'] ?? '').toString();
 
-    // NEW: claimed status
-    final bool isClaimed =
-        (c['is_claimed'] == true) || (c['owner_id'] != null);
+    // claimed status
+    final bool isClaimed = (c['is_claimed'] == true) || (c['owner_id'] != null);
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -358,9 +665,8 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                           CircleAvatar(
                             backgroundColor: Colors.white24,
                             radius: 24,
-                            backgroundImage: logoUrl.isNotEmpty
-                                ? NetworkImage(logoUrl)
-                                : null,
+                            backgroundImage:
+                                logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
                             child: logoUrl.isEmpty
                                 ? const Icon(
                                     Icons.business,
@@ -371,12 +677,10 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                           const SizedBox(width: 12),
                           Expanded(
                             child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment.start,
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Row(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.center,
+                                  crossAxisAlignment: CrossAxisAlignment.center,
                                   children: [
                                     Expanded(
                                       child: Text(
@@ -390,18 +694,13 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                                     ),
                                     const SizedBox(width: 8),
                                     Container(
-                                      padding:
-                                          const EdgeInsets.symmetric(
-                                              horizontal: 8,
-                                              vertical: 4),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 4),
                                       decoration: BoxDecoration(
                                         color: isClaimed
-                                            ? Colors.green
-                                                .withOpacity(0.2)
-                                            : Colors.orange
-                                                .withOpacity(0.2),
-                                        borderRadius:
-                                            BorderRadius.circular(16),
+                                            ? Colors.green.withOpacity(0.2)
+                                            : Colors.orange.withOpacity(0.2),
+                                        borderRadius: BorderRadius.circular(16),
                                         border: Border.all(
                                           color: isClaimed
                                               ? Colors.greenAccent
@@ -422,18 +721,13 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                                           ),
                                           const SizedBox(width: 4),
                                           Text(
-                                            isClaimed
-                                                ? 'Claimed'
-                                                : 'Unclaimed',
+                                            isClaimed ? 'Claimed' : 'Unclaimed',
                                             style: TextStyle(
                                               fontSize: 11,
                                               color: isClaimed
-                                                  ? Colors
-                                                      .greenAccent
-                                                  : Colors
-                                                      .orangeAccent,
-                                              fontWeight:
-                                                  FontWeight.w600,
+                                                  ? Colors.greenAccent
+                                                  : Colors.orangeAccent,
+                                              fontWeight: FontWeight.w600,
                                             ),
                                           ),
                                         ],
@@ -441,9 +735,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                                     ),
                                   ],
                                 ),
-                                if ((c['slogan'] ?? '')
-                                    .toString()
-                                    .isNotEmpty)
+                                if ((c['slogan'] ?? '').toString().isNotEmpty)
                                   Text(
                                     c['slogan'].toString(),
                                     style: const TextStyle(
@@ -453,8 +745,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                                   ),
                                 Text(
                                   '${c['category'] ?? ''} • ${c['city'] ?? ''}',
-                                  style: const TextStyle(
-                                      color: Colors.white70),
+                                  style: const TextStyle(color: Colors.white70),
                                 ),
                               ],
                             ),
@@ -478,8 +769,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                             ),
                           ),
                           child: Row(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
                               const Icon(
                                 Icons.how_to_reg,
@@ -498,8 +788,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                               ),
                               const SizedBox(width: 8),
                               TextButton(
-                                onPressed: () =>
-                                    _openClaimScreen(c),
+                                onPressed: () => _openClaimScreen(c),
                                 child: const Text(
                                   'Claim',
                                   style: TextStyle(
@@ -514,7 +803,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                         ),
                       ],
 
-                      // RATING SUMMARY
+                      // RATING SUMMARY (now uses state)
                       Row(
                         children: [
                           const Text(
@@ -525,7 +814,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                             ),
                           ),
                           const SizedBox(width: 8),
-                          if (ratingCount == 0)
+                          if (_ratingCount == 0)
                             const Text(
                               'No ratings yet',
                               style: TextStyle(color: Colors.white70),
@@ -533,13 +822,11 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                           else
                             Row(
                               children: [
-                                const Icon(Icons.star,
-                                    color: Colors.amber),
+                                const Icon(Icons.star, color: Colors.amber),
                                 const SizedBox(width: 4),
                                 Text(
-                                  '${ratingAvg.toStringAsFixed(1)} ($ratingCount reviews)',
-                                  style: const TextStyle(
-                                      color: Colors.white),
+                                  '${_ratingAvg.toStringAsFixed(1)} ($_ratingCount reviews)',
+                                  style: const TextStyle(color: Colors.white),
                                 ),
                               ],
                             ),
@@ -558,8 +845,7 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                       ),
                       Text(
                         c['description']?.toString() ?? '—',
-                        style:
-                            const TextStyle(color: Colors.white70),
+                        style: const TextStyle(color: Colors.white70),
                       ),
 
                       const SizedBox(height: 16),
@@ -574,18 +860,15 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                       ),
                       Text(
                         'Email: ${c['email'] ?? '—'}',
-                        style:
-                            const TextStyle(color: Colors.white70),
+                        style: const TextStyle(color: Colors.white70),
                       ),
                       Text(
                         'Phone: ${c['phone'] ?? '—'}',
-                        style:
-                            const TextStyle(color: Colors.white70),
+                        style: const TextStyle(color: Colors.white70),
                       ),
                       Text(
                         'Website: ${c['website'] ?? '—'}',
-                        style:
-                            const TextStyle(color: Colors.white70),
+                        style: const TextStyle(color: Colors.white70),
                       ),
 
                       const SizedBox(height: 12),
@@ -596,16 +879,13 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                         runSpacing: 8,
                         children: [
                           ElevatedButton.icon(
-                            onPressed: () =>
-                                _callCompany(c['phone']),
+                            onPressed: () => _callCompany(c['phone']),
                             icon: const Icon(Icons.call),
                             label: const Text('Call'),
                           ),
                           ElevatedButton.icon(
-                            onPressed: () =>
-                                _whatsappCompany(c['phone']),
-                            icon: const FaIcon(
-                                FontAwesomeIcons.whatsapp),
+                            onPressed: () => _whatsappCompany(c['phone']),
+                            icon: const FaIcon(FontAwesomeIcons.whatsapp),
                             label: const Text('WhatsApp'),
                           ),
                           ElevatedButton.icon(
@@ -640,14 +920,12 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (_) =>
-                                  CompanyServicesScreen(company: c),
+                              builder: (_) => CompanyServicesScreen(company: c),
                             ),
                           );
                         },
                         icon: const Icon(Icons.list),
-                        label:
-                            const Text('View services & pricing'),
+                        label: const Text('View services & pricing'),
                       ),
 
                       const SizedBox(height: 24),
@@ -666,18 +944,13 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                       Row(
                         children: [
                           DropdownButton<double>(
-                            value: _userRating == 0
-                                ? null
-                                : _userRating,
+                            value: _userRating == 0 ? null : _userRating,
                             hint: const Text(
                               'Select rating',
-                              style:
-                                  TextStyle(color: Colors.white70),
+                              style: TextStyle(color: Colors.white70),
                             ),
-                            dropdownColor:
-                                const Color(0xFF020617),
-                            style:
-                                const TextStyle(color: Colors.white),
+                            dropdownColor: const Color(0xFF020617),
+                            style: const TextStyle(color: Colors.white),
                             iconEnabledColor: Colors.white,
                             items: [1, 2, 3, 4, 5]
                                 .map(
@@ -695,13 +968,14 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                           ),
                           const SizedBox(width: 12),
                           ElevatedButton(
-                            onPressed: _userRating == 0
-                                ? null
-                                : _submitRating,
+                            onPressed: _userRating == 0 ? null : _submitRating,
                             child: const Text('Submit'),
                           ),
                         ],
                       ),
+
+                      // ✅ ADS GRID MUST BE BELOW THE RATING DROPDOWN
+                      _buildAdsSection(),
                     ],
                   ),
                 ),
@@ -739,8 +1013,7 @@ class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content:
-              Text('You must be logged in to claim a business.'),
+          content: Text('You must be logged in to claim a business.'),
         ),
       );
       return;
@@ -749,8 +1022,8 @@ class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
     if (_evidenceController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-              'Please describe how you are connected to this business.'),
+          content:
+              Text('Please describe how you are connected to this business.'),
         ),
       );
       return;
@@ -780,8 +1053,8 @@ class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-              'Claim submitted. We will review it and get back to you.'),
+          content:
+              Text('Claim submitted. We will review it and get back to you.'),
         ),
       );
 
@@ -880,12 +1153,9 @@ class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
                               )
                             : const Icon(Icons.how_to_reg),
                         label: Padding(
-                          padding:
-                              const EdgeInsets.symmetric(vertical: 10),
+                          padding: const EdgeInsets.symmetric(vertical: 10),
                           child: Text(
-                            _submitting
-                                ? 'Submitting...'
-                                : 'Submit Claim',
+                            _submitting ? 'Submitting...' : 'Submit Claim',
                             style: const TextStyle(fontSize: 16),
                           ),
                         ),

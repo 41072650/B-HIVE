@@ -6,7 +6,7 @@ import 'company_list_screen.dart';
 import 'edit_profile_screen.dart';
 import 'business_stats_screen.dart';
 import 'business_profile_screen.dart';
-import 'jobs_screen.dart'; // 👈 NEW
+import 'jobs_screen.dart';
 
 class LandingScreen extends StatefulWidget {
   /// If true, the user is browsing as a guest (no Supabase session).
@@ -26,6 +26,10 @@ class _LandingScreenState extends State<LandingScreen> {
   final GlobalKey<CompanyListScreenState> _companyListKey =
       GlobalKey<CompanyListScreenState>();
 
+  // ✅ Key to reload business stats when a business changes
+  final GlobalKey<BusinessStatsScreenState> _businessStatsKey =
+      GlobalKey<BusinessStatsScreenState>();
+
   int _selectedIndex = 0;
   bool _isBusiness = false;
 
@@ -33,7 +37,7 @@ class _LandingScreenState extends State<LandingScreen> {
   void initState() {
     super.initState();
 
-    // ⚠️ In guest mode we do NOT touch Supabase at all
+    // In guest mode we do NOT touch Supabase
     if (!widget.isGuest) {
       _loadBusinessMode();
     }
@@ -65,6 +69,9 @@ class _LandingScreenState extends State<LandingScreen> {
     // Refresh companies list
     _companyListKey.currentState?.reloadCompanies();
 
+    // ✅ Refresh stats (important because IndexedStack keeps it alive)
+    _businessStatsKey.currentState?.reloadStats();
+
     // Jump back to home tab
     setState(() {
       _selectedIndex = 0;
@@ -78,15 +85,11 @@ class _LandingScreenState extends State<LandingScreen> {
   @override
   Widget build(BuildContext context) {
     // ------------------------------------------------
-    // GUEST MODE: fewer tabs, no profile / business
+    // GUEST MODE
     // ------------------------------------------------
     if (widget.isGuest) {
-      // Tabs visible to guests
       final List<Widget> guestTabs = [
-        // 0: Home (companies list)
         CompanyListScreen(key: _companyListKey),
-
-        // 1: Jobs (read-only style)
         JobsScreen(isBusiness: false),
       ];
 
@@ -126,30 +129,29 @@ class _LandingScreenState extends State<LandingScreen> {
     }
 
     // ------------------------------------------------
-    // NORMAL LOGGED-IN MODE (existing behaviour)
+    // LOGGED-IN MODE
     // ------------------------------------------------
     final List<Widget> tabs = [
-      // 0: Home (companies list)
       CompanyListScreen(key: _companyListKey),
-
-      // 1: Jobs (everyone sees this)
       JobsScreen(isBusiness: _isBusiness),
-
-      // 2: My Business (only if business mode)
       if (_isBusiness)
         BusinessProfileScreen(
           onBusinessChanged: _onBusinessChanged,
         ),
-
-      // 3: Business stats (only if business mode)
       if (_isBusiness)
-        const BusinessStatsScreen(),
-
-      // Last: Profile (always shown)
+        BusinessStatsScreen(
+          key: _businessStatsKey, // ✅ attach key here
+        ),
       EditProfileScreen(
         onBusinessModeChanged: (isBusiness) {
           setState(() {
             _isBusiness = isBusiness;
+
+            // If user just turned off business mode while sitting on business tab,
+            // ensure selected index remains valid.
+            if (!_isBusiness && _selectedIndex > 2) {
+              _selectedIndex = 0;
+            }
           });
         },
       ),
