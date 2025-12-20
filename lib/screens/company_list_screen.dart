@@ -6,7 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import '../supabase_client.dart';
 import 'company_detail_screen.dart';
 import '../widgets/hive_background.dart';
-import '../Constants/category_map.dart'; // must contain: kCategorySubcategories
+import '../Constants/category_map.dart';
 
 enum CompanySort { newest, rating, name, closest }
 
@@ -18,52 +18,116 @@ class CompanyListScreen extends StatefulWidget {
 }
 
 class CompanyListScreenState extends State<CompanyListScreen> {
-  bool _loading = true;
-  String? _error;
-  List<dynamic> _companies = [];
+  // -------------------------
+  // Pagination (future-proof)
+  // -------------------------
+  static const int _pageSize = 80; // tweak: 40–120 depending on device + data size
+  final ScrollController _scrollController = ScrollController();
 
+  bool _loading = true;
+  bool _loadingMore = false;
+  bool _hasMore = true;
+
+  String? _error;
+
+  // Raw companies (paged) from Supabase
+  final List<Map<String, dynamic>> _companies = [];
+
+  // UI filters
   String _searchQuery = "";
   String _selectedCategoryFilter = 'All';
   String? _selectedSubcategory; // null = "All subcategories"
   CompanySort _sortBy = CompanySort.newest;
 
+  // Location for "closest"
   double? _userLat;
   double? _userLon;
 
-  // Can be called from other screens (e.g. after business profile changes)
+  // Public method for other screens (e.g. LandingScreen) to refresh
   Future<void> reloadCompanies() async {
-    await _loadCompanies();
+    await _refreshCompanies();
   }
 
   @override
   void initState() {
     super.initState();
-    _loadCompanies();
+    _scrollController.addListener(_onScroll);
+    _refreshCompanies();
   }
 
-  Future<void> _loadCompanies() async {
+  @override
+  void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_hasMore || _loadingMore || _loading) return;
+    if (!_scrollController.hasClients) return;
+
+    final pos = _scrollController.position;
+    // When user gets near bottom, fetch next page
+    if (pos.pixels >= pos.maxScrollExtent - 420) {
+      _loadMoreCompanies();
+    }
+  }
+
+  Future<void> _refreshCompanies() async {
     if (!mounted) return;
     setState(() {
       _loading = true;
+      _loadingMore = false;
+      _hasMore = true;
+      _error = null;
+      _companies.clear();
+    });
+
+    await _loadMoreCompanies(initial: true);
+
+    if (!mounted) return;
+    setState(() => _loading = false);
+  }
+
+  Future<void> _loadMoreCompanies({bool initial = false}) async {
+    if (!_hasMore || _loadingMore) return;
+
+    if (!mounted) return;
+    setState(() {
+      _loadingMore = true;
       _error = null;
     });
 
     try {
+      // We only need enough fields for list rendering.
+      // (Future-proof: keep select list short for performance.)
+      final from = _companies.length;
+      final to = from + _pageSize - 1;
+
       final response = await supabase
           .from('companies')
-          .select()
-          .order('inserted_at', ascending: false);
+          .select(
+            'id, name, category, subcategory, city, logo_url, is_paid, rating_avg, rating_count, inserted_at, latitude, longitude',
+          )
+          .order('inserted_at', ascending: false)
+          .range(from, to);
+
+      final rows = ((response as List?) ?? [])
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
 
       if (!mounted) return;
+
       setState(() {
-        _companies = (response as List?) ?? [];
-        _loading = false;
+        _companies.addAll(rows);
+        // If we got fewer than pageSize, there is no more
+        _hasMore = rows.length == _pageSize;
+        _loadingMore = false;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _companies = [];
-        _loading = false;
+        _loadingMore = false;
         _error = 'Failed to load companies: $e';
       });
     }
@@ -71,30 +135,21 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
   // ─────────────── CATEGORY + SUBCATEGORY OPTIONS ───────────────
 
-  /// Categories come from kCategorySubcategories so they are stable.
   List<String> get _categoryOptions {
     final keys = kCategorySubcategories.keys.toList();
 
-    // Make sure "All" is first if it's present in the map
     keys.sort((a, b) {
       if (a == 'All') return -1;
       if (b == 'All') return 1;
       return a.compareTo(b);
     });
 
-    // If the dev forgot to put "All" in the map, ensure it exists.
-    if (!keys.contains('All')) {
-      keys.insert(0, 'All');
-    }
-
+    if (!keys.contains('All')) keys.insert(0, 'All');
     return keys;
   }
 
-  /// Subcategories are read from kCategorySubcategories for the selected category.
   List<String> get _availableSubcategories {
-    if (_selectedCategoryFilter == 'All') {
-      return const <String>[];
-    }
+    if (_selectedCategoryFilter == 'All') return const <String>[];
     return kCategorySubcategories[_selectedCategoryFilter] ?? const <String>[];
   }
 
@@ -109,21 +164,17 @@ class CompanyListScreenState extends State<CompanyListScreen> {
     }
   }
 
-  // Haversine distance in km
-  double _distanceKm(
-    double lat1,
-    double lon1,
-    double lat2,
-    double lon2,
-  ) {
-    const R = 6371.0; // Earth radius in km
+  double _distanceKm(double lat1, double lon1, double lat2, double lon2) {
+    const R = 6371.0;
     final dLat = (lat2 - lat1) * (math.pi / 180);
     final dLon = (lon2 - lon1) * (math.pi / 180);
+
     final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
         math.cos(lat1 * math.pi / 180) *
             math.cos(lat2 * math.pi / 180) *
             math.sin(dLon / 2) *
             math.sin(dLon / 2);
+
     final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
     return R * c;
   }
@@ -149,8 +200,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content:
-                Text('Location permission denied. Cannot sort by distance.'),
+            content: Text('Location permission denied. Cannot sort by distance.'),
           ),
         );
         return;
@@ -175,12 +225,10 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
   // ─────────────── FILTER + SORT ───────────────
 
-  List<dynamic> get _filteredCompanies {
+  List<Map<String, dynamic>> get _filteredCompanies {
     final query = _searchQuery.trim().toLowerCase();
 
     final filtered = _companies.where((company) {
-      if (company is! Map) return false;
-
       final name = (company['name'] ?? '').toString().toLowerCase();
       final category = (company['category'] ?? '').toString();
       final categoryLower = category.toLowerCase();
@@ -203,28 +251,26 @@ class CompanyListScreenState extends State<CompanyListScreen> {
       return matchesSearch && matchesCategory && matchesSubcategory;
     }).toList();
 
-    // Sort – PAID BUSINESSES FIRST, then by selected sort mode
+    // Paid first, then chosen sort
     filtered.sort((a, b) {
-      final aa = (a as Map)['is_paid'] == true ? 1 : 0;
-      final bb = (b as Map)['is_paid'] == true ? 1 : 0;
-
-      // Paid first
+      final aa = a['is_paid'] == true ? 1 : 0;
+      final bb = b['is_paid'] == true ? 1 : 0;
       if (aa != bb) return bb.compareTo(aa);
 
       switch (_sortBy) {
         case CompanySort.newest:
-          final da = _parseDate((a as Map)['inserted_at']);
-          final db = _parseDate((b as Map)['inserted_at']);
+          final da = _parseDate(a['inserted_at']);
+          final db = _parseDate(b['inserted_at']);
           return db.compareTo(da);
 
         case CompanySort.rating:
-          final ra = (((a as Map)['rating_avg'] as num?) ?? 0).toDouble();
-          final rb = (((b as Map)['rating_avg'] as num?) ?? 0).toDouble();
+          final ra = ((a['rating_avg'] as num?) ?? 0).toDouble();
+          final rb = ((b['rating_avg'] as num?) ?? 0).toDouble();
           return rb.compareTo(ra);
 
         case CompanySort.name:
-          final na = ((a as Map)['name'] ?? '').toString().toLowerCase();
-          final nb = ((b as Map)['name'] ?? '').toString().toLowerCase();
+          final na = (a['name'] ?? '').toString().toLowerCase();
+          final nb = (b['name'] ?? '').toString().toLowerCase();
           return na.compareTo(nb);
 
         case CompanySort.closest:
@@ -232,15 +278,19 @@ class CompanyListScreenState extends State<CompanyListScreen> {
           final userLon = _userLon;
           if (userLat == null || userLon == null) return 0;
 
-          final la = (((a as Map)['latitude'] as num?)?.toDouble());
-          final loa = (((a as Map)['longitude'] as num?)?.toDouble());
-          final lb = (((b as Map)['latitude'] as num?)?.toDouble());
-          final lob = (((b as Map)['longitude'] as num?)?.toDouble());
+          final la = (a['latitude'] as num?)?.toDouble();
+          final loa = (a['longitude'] as num?)?.toDouble();
+          final lb = (b['latitude'] as num?)?.toDouble();
+          final lob = (b['longitude'] as num?)?.toDouble();
 
-          if (la == null || loa == null || lb == null || lob == null) return 0;
+          // Put companies with coords first when sorting by closest
+          final aHas = la != null && loa != null;
+          final bHas = lb != null && lob != null;
+          if (aHas != bHas) return bHas ? 1 : -1;
+          if (!aHas || !bHas) return 0;
 
-          final da = _distanceKm(userLat, userLon, la, loa);
-          final db = _distanceKm(userLat, userLon, lb, lob);
+          final da = _distanceKm(userLat, userLon, la!, loa!);
+          final db = _distanceKm(userLat, userLon, lb!, lob!);
           return da.compareTo(db);
       }
     });
@@ -287,18 +337,10 @@ class CompanyListScreenState extends State<CompanyListScreen> {
               ),
 
               const SizedBox(height: 8),
-
-              // 🏷 CATEGORY CHIPS
               _buildCategoryBar(),
-
-              // 🔽 SUB-CATEGORY CHIPS
               _buildSubcategoryBar(),
-
               const SizedBox(height: 8),
-
-              // ↕️ SORT ROW
               _buildSortRow(),
-
               const SizedBox(height: 8),
 
               if (_error != null)
@@ -319,13 +361,12 @@ class CompanyListScreenState extends State<CompanyListScreen> {
                     ),
                   ),
                 ),
-
               if (_error != null) const SizedBox(height: 8),
 
-              // LIST + PULL-TO-REFRESH
+              // LIST + PULL-TO-REFRESH + INFINITE SCROLL
               Expanded(
                 child: RefreshIndicator(
-                  onRefresh: _loadCompanies,
+                  onRefresh: _refreshCompanies,
                   color: Colors.amber,
                   backgroundColor: Colors.black87,
                   child: _buildCompanyList(filteredCompanies),
@@ -338,10 +379,10 @@ class CompanyListScreenState extends State<CompanyListScreen> {
     );
   }
 
-  // Build the scrollable list used by RefreshIndicator
-  Widget _buildCompanyList(List<dynamic> filteredCompanies) {
+  Widget _buildCompanyList(List<Map<String, dynamic>> filteredCompanies) {
     if (_loading) {
       return ListView(
+        controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         children: const [
           SizedBox(
@@ -356,6 +397,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
 
     if (filteredCompanies.isEmpty) {
       return ListView(
+        controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         children: const [
           SizedBox(
@@ -371,12 +413,31 @@ class CompanyListScreenState extends State<CompanyListScreen> {
       );
     }
 
+    // We add one extra item at the end for the loading-more indicator.
+    final itemCount = filteredCompanies.length + 1;
+
     return ListView.builder(
+      controller: _scrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.only(top: 8),
-      itemCount: filteredCompanies.length,
+      itemCount: itemCount,
       itemBuilder: (context, index) {
-        final company = Map<String, dynamic>.from(filteredCompanies[index] as Map);
+        // Footer loader row
+        if (index == filteredCompanies.length) {
+          if (!_hasMore) {
+            return const SizedBox(height: 18);
+          }
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            child: Center(
+              child: _loadingMore
+                  ? const CircularProgressIndicator(color: Colors.white)
+                  : const SizedBox.shrink(),
+            ),
+          );
+        }
+
+        final company = filteredCompanies[index];
 
         final ratingAvg = ((company['rating_avg'] as num?) ?? 0).toDouble();
         final ratingCount = (company['rating_count'] as int?) ?? 0;
@@ -489,9 +550,9 @@ class CompanyListScreenState extends State<CompanyListScreen> {
                 ),
               );
 
-              // ✅ Always refresh when returning so rating updates immediately
+              // Refresh so rating updates, etc.
               if (mounted) {
-                await _loadCompanies();
+                await _refreshCompanies();
               }
             },
           ),
@@ -522,7 +583,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
             onSelected: (_) {
               setState(() {
                 _selectedCategoryFilter = cat;
-                _selectedSubcategory = null; // reset subcategory
+                _selectedSubcategory = null;
               });
             },
             labelStyle: TextStyle(
@@ -552,7 +613,7 @@ class CompanyListScreenState extends State<CompanyListScreen> {
       child: ListView.separated(
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
         scrollDirection: Axis.horizontal,
-        itemCount: subs.length + 1, // + "All"
+        itemCount: subs.length + 1,
         separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
           String label;

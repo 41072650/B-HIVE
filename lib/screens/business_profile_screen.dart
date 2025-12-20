@@ -6,6 +6,10 @@ import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/services.dart';
+
+import 'package:video_player/video_player.dart';
+import 'package:chewie/chewie.dart';
 
 import '../supabase_client.dart';
 import '../widgets/hive_background.dart';
@@ -58,10 +62,9 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
   List<Map<String, dynamic>> _myCompanies = [];
   String? _companyId; // null = “creating new”
   bool _isCreatingNew = false;
-  bool _isPaid = false; // subscription flag for the selected company
+  bool _isPaid = false; // subscription flag for the selected company (used as "Verified" for now)
 
-  // ✅ NEW: Layout toggle
-  // false = My Business card view, true = Add/Edit business form view
+  // Layout toggle
   bool _showEditForm = false;
 
   // ---- Logo upload state ----
@@ -74,7 +77,7 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
   static const String _bucketCompanyAds = 'company-ads';
   static const String _bucketCompanyLogos = 'company-logos';
 
-  // ✅ Ads preview state (My Business)
+  // Ads preview state (My Business)
   bool _myAdsLoading = false;
   String? _myAdsError;
 
@@ -124,6 +127,12 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
         return 'image/png';
       case 'webp':
         return 'image/webp';
+      case 'mp4':
+        return 'video/mp4';
+      case 'mov':
+        return 'video/quicktime';
+      case 'webm':
+        return 'video/webm';
       default:
         return 'application/octet-stream';
     }
@@ -134,69 +143,79 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     return e == 'jpg' || e == 'png' || e == 'webp';
   }
 
-// ✅ NEW: share options (system only for now)
-Future<void> _openShareSheetForAd(String url) async {
-  final companyName =
-      _nameController.text.trim().isEmpty ? 'B-Hive' : _nameController.text.trim();
-  final text = 'Check out this ad from $companyName on B-Hive:\n$url';
+  bool _isAllowedVideoExt(String ext) {
+    final e = _normalizeExt(ext);
+    return e == 'mp4' || e == 'mov' || e == 'webm';
+  }
 
-  showModalBottomSheet(
-    context: context,
-    backgroundColor: const Color(0xFF0B0F1A),
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-    ),
-    builder: (_) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 10),
-          Container(
-            height: 4,
-            width: 42,
-            decoration: BoxDecoration(
-              color: Colors.white24,
-              borderRadius: BorderRadius.circular(999),
-            ),
-          ),
-          const SizedBox(height: 12),
-          const ListTile(
-            title: Text(
-              'Share Ad',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
-            ),
-            subtitle: Text(
-              'Choose how you want to share this ad.',
-              style: TextStyle(color: Colors.white70),
-            ),
-          ),
-          const Divider(height: 1, color: Colors.white24),
-          ListTile(
-            leading: const Icon(Icons.ios_share, color: Colors.white),
-            title: const Text('Share…', style: TextStyle(color: Colors.white)),
-            subtitle: const Text('System share menu',
-                style: TextStyle(color: Colors.white60, fontSize: 12)),
-            onTap: () {
-              Navigator.pop(context);
-              Share.share(text);
-            },
-          ),
-          const SizedBox(height: 8),
-        ],
+  bool _isVideoPath(String pathOrName) {
+    final n = pathOrName.toLowerCase();
+    return n.endsWith('.mp4') || n.endsWith('.mov') || n.endsWith('.webm');
+  }
+
+  // ✅ Share options (system only for now)
+  Future<void> _openShareSheetForAd(String url) async {
+    final companyName = _nameController.text.trim().isEmpty
+        ? 'B-Hive'
+        : _nameController.text.trim();
+    final text = 'Check out this ad from $companyName on B-Hive:\n$url';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF0B0F1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-    ),
-  );
-}
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              height: 4,
+              width: 42,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const ListTile(
+              title: Text(
+                'Share Ad',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+              ),
+              subtitle: Text(
+                'Choose how you want to share this ad.',
+                style: TextStyle(color: Colors.white70),
+              ),
+            ),
+            const Divider(height: 1, color: Colors.white24),
+            ListTile(
+              leading: const Icon(Icons.ios_share, color: Colors.white),
+              title: const Text('Share…', style: TextStyle(color: Colors.white)),
+              subtitle: const Text(
+                'System share menu',
+                style: TextStyle(color: Colors.white60, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                Share.share(text);
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
 
-
-  // ✅ NEW: Fixed-size Ad Viewer (with Share + Remove for owner)
+  // ✅ Fixed-size Ad Viewer (with Share + Remove for owner)
   void _openAdViewer(int initialIndex) {
     if (_myAdSignedUrls.isEmpty) return;
     if (initialIndex < 0 || initialIndex >= _myAdSignedUrls.length) return;
 
     final pageController = PageController(initialPage: initialIndex);
-
-    // We track current index for share/delete
     int currentIndex = initialIndex;
 
     showDialog(
@@ -222,7 +241,6 @@ Future<void> _openShareSheetForAd(String url) async {
                 ),
                 child: Column(
                   children: [
-                    // Header: Logo + Company Name + Close
                     Padding(
                       padding: const EdgeInsets.fromLTRB(14, 12, 10, 10),
                       child: Row(
@@ -263,10 +281,7 @@ Future<void> _openShareSheetForAd(String url) async {
                         ],
                       ),
                     ),
-
                     const Divider(height: 1, color: Colors.white24),
-
-                    // Display area (image should fill this whole area)
                     Expanded(
                       child: Padding(
                         padding: const EdgeInsets.all(12),
@@ -296,9 +311,19 @@ Future<void> _openShareSheetForAd(String url) async {
                                 itemCount: _myAdSignedUrls.length,
                                 itemBuilder: (context, index) {
                                   final url = _myAdSignedUrls[index];
+                                  final path = _myAdPaths[index];
+                                  final isVideo = _isVideoPath(path);
 
                                   return LayoutBuilder(
                                     builder: (context, constraints) {
+                                      if (isVideo) {
+                                        return SizedBox(
+                                          width: constraints.maxWidth,
+                                          height: constraints.maxHeight,
+                                          child: _AdVideoPlayer(url: url),
+                                        );
+                                      }
+
                                       return InteractiveViewer(
                                         minScale: 1.0,
                                         maxScale: 4.0,
@@ -309,7 +334,7 @@ Future<void> _openShareSheetForAd(String url) async {
                                             url,
                                             width: constraints.maxWidth,
                                             height: constraints.maxHeight,
-                                            fit: BoxFit.contain, // fills area while preserving aspect
+                                            fit: BoxFit.contain,
                                             alignment: Alignment.center,
                                             errorBuilder: (_, __, ___) =>
                                                 const Padding(
@@ -334,11 +359,7 @@ Future<void> _openShareSheetForAd(String url) async {
                         ),
                       ),
                     ),
-
-                    // ✅ Divider ABOVE footer actions (as requested)
                     const Divider(height: 1, color: Colors.white24),
-
-                    // Footer actions: Share + Remove
                     Padding(
                       padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
                       child: Row(
@@ -416,18 +437,15 @@ Future<void> _openShareSheetForAd(String url) async {
     final path = _myAdPaths[index];
 
     try {
-      // Delete from storage
       await supabase.storage.from(_bucketCompanyAds).remove([path]);
 
       if (!mounted) return;
 
-      // Update UI instantly (grid + viewer)
       setState(() {
         _myAdSignedUrls.removeAt(index);
         _myAdPaths.removeAt(index);
       });
 
-      // If none left, update has_ads false (best effort)
       if (_myAdSignedUrls.isEmpty) {
         try {
           await supabase
@@ -436,7 +454,7 @@ Future<void> _openShareSheetForAd(String url) async {
         } catch (_) {}
 
         if (mounted && Navigator.canPop(context)) {
-          Navigator.pop(context); // close viewer
+          Navigator.pop(context);
         }
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Ad deleted.')),
@@ -444,7 +462,6 @@ Future<void> _openShareSheetForAd(String url) async {
         return;
       }
 
-      // Auto-advance to next (or previous if deleted last)
       final newIndex = index.clamp(0, _myAdSignedUrls.length - 1);
       if (controller.hasClients) {
         controller.jumpToPage(newIndex);
@@ -461,7 +478,7 @@ Future<void> _openShareSheetForAd(String url) async {
     }
   }
 
-  // ✅ Load my ads for current company
+  // ✅ Load my ads for current company (images + videos)
   Future<void> _loadMyAds() async {
     final companyId = _companyId;
     if (companyId == null || companyId.isEmpty) return;
@@ -474,30 +491,31 @@ Future<void> _openShareSheetForAd(String url) async {
     });
 
     try {
-      // list under {companyId}/ads/
       final objects = await supabase.storage.from(_bucketCompanyAds).list(
             path: '$companyId/ads',
           );
 
-      final imageObjects = objects.where((o) {
+      final mediaObjects = objects.where((o) {
         final name = (o.name ?? '').toLowerCase();
         return name.endsWith('.png') ||
             name.endsWith('.jpg') ||
             name.endsWith('.jpeg') ||
-            name.endsWith('.webp');
+            name.endsWith('.webp') ||
+            name.endsWith('.mp4') ||
+            name.endsWith('.mov') ||
+            name.endsWith('.webm');
       }).toList();
 
-      // newest first (timestamps in filename work well)
-      imageObjects.sort((a, b) => (b.name ?? '').compareTo(a.name ?? ''));
+      mediaObjects.sort((a, b) => (b.name ?? '').compareTo(a.name ?? ''));
 
       final urls = <String>[];
       final paths = <String>[];
 
-      for (final o in imageObjects) {
+      for (final o in mediaObjects) {
         final filePath = '$companyId/ads/${o.name}';
         final signedUrl = await supabase.storage
             .from(_bucketCompanyAds)
-            .createSignedUrl(filePath, 60 * 60); // 1 hour
+            .createSignedUrl(filePath, 60 * 60);
         urls.add(signedUrl);
         paths.add(filePath);
       }
@@ -572,19 +590,36 @@ Future<void> _openShareSheetForAd(String url) async {
             ),
             itemBuilder: (context, i) {
               final url = _myAdSignedUrls[i];
+              final path = _myAdPaths[i];
+              final isVideo = _isVideoPath(path);
+
               return GestureDetector(
                 onTap: () => _openAdViewer(i),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(10),
                   child: Container(
                     color: Colors.white10,
-                    child: Image.network(
-                      url,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const Center(
-                        child: Icon(Icons.broken_image, color: Colors.white54),
-                      ),
-                    ),
+                    child: isVideo
+                        ? Stack(
+                            fit: StackFit.expand,
+                            children: const [
+                              Center(
+                                child: Icon(
+                                  Icons.play_circle_fill,
+                                  color: Colors.white70,
+                                  size: 42,
+                                ),
+                              ),
+                            ],
+                          )
+                        : Image.network(
+                            url,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Center(
+                              child:
+                                  Icon(Icons.broken_image, color: Colors.white54),
+                            ),
+                          ),
                   ),
                 ),
               );
@@ -594,52 +629,29 @@ Future<void> _openShareSheetForAd(String url) async {
     );
   }
 
-  /// Open Paystack subscription for the currently selected company
-  Future<void> _openSubscriptionPage() async {
+  // ✅ NEW: Open manual verification screen (no Paystack)
+  void _openVerifyScreen() {
     if (_companyId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Please select or create a company first.')),
+        const SnackBar(content: Text('Please select or create a company first.')),
       );
       return;
     }
 
-    final user = supabase.auth.currentUser;
-    if (user == null || user.email == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You must be logged in to subscribe.')),
-      );
-      return;
-    }
+    final companyName = _nameController.text.trim().isEmpty
+        ? 'Your business'
+        : _nameController.text.trim();
 
-    try {
-      final response = await supabase.functions.invoke(
-        'create-paystack-link',
-        body: {'companyId': _companyId, 'userEmail': user.email},
-      );
-
-      final data = response.data as Map<String, dynamic>?;
-      final url = data?['authorization_url'] as String?;
-
-      if (url == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Could not get subscription link from server.')),
-        );
-        return;
-      }
-
-      final uri = Uri.parse(url);
-      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open subscription page.')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error starting subscription: $e')),
-      );
-    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VerifyBusinessScreen(
+          companyId: _companyId!,
+          companyName: companyName,
+          userEmail: supabase.auth.currentUser?.email ?? '',
+        ),
+      ),
+    );
   }
 
   Future<void> _loadMyCompanies() async {
@@ -775,7 +787,7 @@ Future<void> _openShareSheetForAd(String url) async {
         }
       }
 
-      _isPaid = data['is_paid'] == true;
+      _isPaid = data['is_paid'] == true; // used as Verified for now
       _newLogoBytes = null;
       _newLogoExt = null;
     });
@@ -871,8 +883,7 @@ Future<void> _openShareSheetForAd(String url) async {
     final user = supabase.auth.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('You must be logged in to create a company.')),
+        const SnackBar(content: Text('You must be logged in to create a company.')),
       );
       return;
     }
@@ -898,7 +909,7 @@ Future<void> _openShareSheetForAd(String url) async {
         'phone': _phoneController.text.trim(),
         'maps_url': mapsUrl,
         'owner_id': user.id,
-        'is_paid': false,
+        'is_paid': false, // stays false until you manually verify later
       };
 
       if (coords != null) {
@@ -932,11 +943,7 @@ Future<void> _openShareSheetForAd(String url) async {
       widget.onBusinessChanged?.call();
       await _loadMyCompanies();
 
-      if (mounted) {
-        setState(() {
-          _showEditForm = false;
-        });
-      }
+      if (mounted) setState(() => _showEditForm = false);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -997,9 +1004,7 @@ Future<void> _openShareSheetForAd(String url) async {
 
       widget.onBusinessChanged?.call();
 
-      setState(() {
-        _showEditForm = false;
-      });
+      setState(() => _showEditForm = false);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1010,25 +1015,39 @@ Future<void> _openShareSheetForAd(String url) async {
     }
   }
 
-  // Uploads into /ads/ to match your INSERT policy
-  Future<void> _addBusinessImage() async {
+  // ✅ Upload media (image OR video) to same bucket/path
+  Future<void> _addBusinessMedia() async {
     if (_companyId == null) return;
 
     try {
-      final XFile? picked = await _picker.pickImage(
-        source: ImageSource.gallery,
+      final XFile? picked = await _picker.pickMedia(
         imageQuality: 85,
       );
       if (picked == null) return;
 
       final bytes = await picked.readAsBytes();
-      final ext = _normalizeExt(picked.name.split('.').last.toLowerCase());
+      final ext = picked.name.contains('.')
+          ? _normalizeExt(picked.name.split('.').last.toLowerCase())
+          : '';
 
-      if (!_isAllowedImageExt(ext)) {
+      final isImage = _isAllowedImageExt(ext);
+      final isVideo = _isAllowedVideoExt(ext);
+
+      if (!isImage && !isVideo) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('Only PNG, JPG, or WEBP images are allowed.')),
+            content: Text('Only PNG/JPG/WEBP images or MP4/MOV/WEBM videos are allowed.'),
+          ),
+        );
+        return;
+      }
+
+      // Optional size limit for videos (30MB)
+      if (isVideo && bytes.lengthInBytes > 30 * 1024 * 1024) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Video too large. Max 30MB.')),
         );
         return;
       }
@@ -1050,61 +1069,12 @@ Future<void> _openShareSheetForAd(String url) async {
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Image added successfully')),
+        SnackBar(content: Text(isVideo ? 'Video uploaded successfully' : 'Image uploaded successfully')),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to add image: $e')),
-      );
-    }
-  }
-
-  // Real ad upload (same policy-friendly path)
-  Future<void> _addAdvertisement() async {
-    if (_companyId == null) return;
-
-    try {
-      final XFile? picked = await _picker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 85,
-      );
-      if (picked == null) return;
-
-      final bytes = await picked.readAsBytes();
-      final ext = _normalizeExt(picked.name.split('.').last.toLowerCase());
-
-      if (!_isAllowedImageExt(ext)) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Only PNG, JPG, or WEBP images are allowed.')),
-        );
-        return;
-      }
-
-      final path = '${_companyId!}/ads/${DateTime.now().millisecondsSinceEpoch}.$ext';
-
-      await supabase.storage.from(_bucketCompanyAds).uploadBinary(
-            path,
-            bytes,
-            fileOptions: FileOptions(contentType: _contentTypeForExt(ext)),
-          );
-
-      try {
-        await supabase.from('companies').update({'has_ads': true}).eq('id', _companyId!);
-      } catch (_) {}
-
-      await _loadMyAds();
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Advertisement uploaded successfully')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to add advertisement: $e')),
+        SnackBar(content: Text('Failed to upload media: $e')),
       );
     }
   }
@@ -1145,8 +1115,7 @@ Future<void> _openShareSheetForAd(String url) async {
             children: [
               Text(
                 'Company logo',
-                style:
-                    TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
               ),
               SizedBox(height: 2),
               Text(
@@ -1182,14 +1151,16 @@ Future<void> _openShareSheetForAd(String url) async {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text(
-                'BHive Business Subscription',
+                'Business Verification',
                 style: TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
               ),
               if (_companyId != null)
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: _isPaid ? Colors.green : Colors.orange,
                     borderRadius: BorderRadius.circular(20),
@@ -1197,9 +1168,10 @@ Future<void> _openShareSheetForAd(String url) async {
                   child: Text(
                     _isPaid ? 'Verified' : 'Free plan',
                     style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600),
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
             ],
@@ -1207,16 +1179,16 @@ Future<void> _openShareSheetForAd(String url) async {
           const SizedBox(height: 8),
           Text(
             _isPaid
-                ? 'Your company is verified. You have full access to rich profile editing, analytics and extra visibility.'
-                : 'Create a basic listing for free. Upgrade to verify your business and unlock rich profile fields, analytics and extra visibility.',
+                ? 'Your business is verified.'
+                : 'Want to verify your business? Email us and we will help you get verified.',
             style: const TextStyle(color: Colors.white70, fontSize: 13),
           ),
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
             child: OutlinedButton(
-              onPressed: _openSubscriptionPage,
-              child: Text(_isPaid ? 'Manage Subscription' : 'Upgrade / Verify Business'),
+              onPressed: _openVerifyScreen,
+              child: Text(_isPaid ? 'Contact support' : 'Email to verify'),
             ),
           ),
         ],
@@ -1245,7 +1217,6 @@ Future<void> _openShareSheetForAd(String url) async {
           ),
         ),
         const SizedBox(height: 12),
-
         if (_myCompanies.isNotEmpty)
           DropdownButtonFormField<String?>(
             value: isEditingExisting ? _companyId : null,
@@ -1279,9 +1250,7 @@ Future<void> _openShareSheetForAd(String url) async {
                 final name = (company['name'] ?? 'your company').toString();
                 ScaffoldMessenger.of(context)
                     .showSnackBar(SnackBar(content: Text('Switched to $name')));
-                setState(() {
-                  _showEditForm = false;
-                });
+                setState(() => _showEditForm = false);
               }
             },
           ),
@@ -1371,9 +1340,7 @@ Future<void> _openShareSheetForAd(String url) async {
                 ),
             ],
           ),
-
           const SizedBox(height: 12),
-
           if (_descriptionController.text.trim().isNotEmpty) ...[
             const Text(
               'Description',
@@ -1385,7 +1352,6 @@ Future<void> _openShareSheetForAd(String url) async {
             ),
             const SizedBox(height: 10),
           ],
-
           const Text(
             'Contact',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
@@ -1402,22 +1368,16 @@ Future<void> _openShareSheetForAd(String url) async {
             'Website: —',
             style: TextStyle(color: Colors.white70, fontSize: 12),
           ),
-
           const SizedBox(height: 12),
-
           Wrap(
             spacing: 10,
             runSpacing: 10,
             children: [
+              // ✅ Upload media (image/video)
               OutlinedButton.icon(
-                onPressed: _addBusinessImage,
+                onPressed: _addBusinessMedia,
                 icon: const Icon(Icons.add_photo_alternate),
-                label: const Text('Add Image'),
-              ),
-              OutlinedButton.icon(
-                onPressed: _addAdvertisement,
-                icon: const Icon(Icons.campaign),
-                label: const Text('Add Advertisement'),
+                label: const Text('Upload Media'),
               ),
               OutlinedButton.icon(
                 onPressed: () {
@@ -1436,7 +1396,6 @@ Future<void> _openShareSheetForAd(String url) async {
               ),
             ],
           ),
-
           _buildMyAdsGrid(),
         ],
       ),
@@ -1455,28 +1414,21 @@ Future<void> _openShareSheetForAd(String url) async {
         Row(
           children: [
             TextButton.icon(
-              onPressed: () {
-                setState(() {
-                  _showEditForm = false;
-                });
-              },
+              onPressed: () => setState(() => _showEditForm = false),
               icon: const Icon(Icons.arrow_back, color: Colors.white),
               label: const Text('Back', style: TextStyle(color: Colors.white)),
             ),
           ],
         ),
         const SizedBox(height: 6),
-
         _buildLogoPreview(),
         const SizedBox(height: 20),
-
         Text(
           isEditingExisting ? 'Edit your business details' : 'Business details',
           style: const TextStyle(
               fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
         ),
         const SizedBox(height: 16),
-
         TextFormField(
           controller: _nameController,
           style: const TextStyle(color: Colors.white),
@@ -1484,7 +1436,6 @@ Future<void> _openShareSheetForAd(String url) async {
           validator: (v) => (v == null || v.isEmpty) ? 'Enter a company name' : null,
         ),
         const SizedBox(height: 12),
-
         TextFormField(
           controller: _sloganController,
           style: const TextStyle(color: Colors.white),
@@ -1500,7 +1451,6 @@ Future<void> _openShareSheetForAd(String url) async {
           ),
         ),
         const SizedBox(height: 12),
-
         DropdownButtonFormField<String>(
           value: _usingOtherCategory ? 'Other' : _selectedCategory,
           decoration: bhiveInputDecoration('Category'),
@@ -1555,7 +1505,6 @@ Future<void> _openShareSheetForAd(String url) async {
           ),
         ],
         const SizedBox(height: 12),
-
         if (currentSubcategories.isNotEmpty) ...[
           DropdownButtonFormField<String>(
             value: _usingOtherSubcategory ? 'Other' : _selectedSubcategory,
@@ -1601,7 +1550,6 @@ Future<void> _openShareSheetForAd(String url) async {
           ],
           const SizedBox(height: 12),
         ],
-
         TextFormField(
           controller: _cityController,
           style: const TextStyle(color: Colors.white),
@@ -1609,7 +1557,6 @@ Future<void> _openShareSheetForAd(String url) async {
           validator: (v) => (v == null || v.isEmpty) ? 'Enter a city' : null,
         ),
         const SizedBox(height: 12),
-
         TextFormField(
           controller: _mapsUrlController,
           style: const TextStyle(color: Colors.white),
@@ -1627,7 +1574,6 @@ Future<void> _openShareSheetForAd(String url) async {
           keyboardType: TextInputType.url,
         ),
         const SizedBox(height: 12),
-
         TextFormField(
           controller: _descriptionController,
           style: const TextStyle(color: Colors.white),
@@ -1635,7 +1581,6 @@ Future<void> _openShareSheetForAd(String url) async {
           decoration: bhiveInputDecoration('Short Description'),
         ),
         const SizedBox(height: 12),
-
         TextFormField(
           controller: _servicesController,
           style: const TextStyle(color: Colors.white),
@@ -1652,7 +1597,6 @@ Future<void> _openShareSheetForAd(String url) async {
           ),
         ),
         const SizedBox(height: 12),
-
         TextFormField(
           controller: _pricesController,
           style: const TextStyle(color: Colors.white),
@@ -1671,7 +1615,6 @@ Future<void> _openShareSheetForAd(String url) async {
           ),
         ),
         const SizedBox(height: 12),
-
         TextFormField(
           controller: _imageUrlsController,
           style: const TextStyle(color: Colors.white),
@@ -1683,7 +1626,6 @@ Future<void> _openShareSheetForAd(String url) async {
           ),
         ),
         const SizedBox(height: 12),
-
         TextFormField(
           controller: _emailController,
           style: const TextStyle(color: Colors.white),
@@ -1691,7 +1633,6 @@ Future<void> _openShareSheetForAd(String url) async {
           keyboardType: TextInputType.emailAddress,
         ),
         const SizedBox(height: 12),
-
         TextFormField(
           controller: _phoneController,
           style: const TextStyle(color: Colors.white),
@@ -1699,7 +1640,6 @@ Future<void> _openShareSheetForAd(String url) async {
           keyboardType: TextInputType.phone,
         ),
         const SizedBox(height: 20),
-
         ElevatedButton(
           onPressed: _saving
               ? null
@@ -1722,7 +1662,8 @@ Future<void> _openShareSheetForAd(String url) async {
   @override
   Widget build(BuildContext context) {
     final isEditingExisting = !_isCreatingNew && _companyId != null;
-    final primaryButtonText = isEditingExisting ? 'Save Changes' : 'Create Company';
+    final primaryButtonText =
+        isEditingExisting ? 'Save Changes' : 'Create Company';
     final advancedLocked = !_isPaid;
 
     final List<String> currentSubcategories = _usingOtherCategory
@@ -1765,12 +1706,10 @@ Future<void> _openShareSheetForAd(String url) async {
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
                                   _buildSubscriptionCard(),
-
                                   if (!_showEditForm) ...[
                                     _buildCompanySelector(),
                                     _buildBusinessCard(),
                                   ],
-
                                   if (_showEditForm) ...[
                                     _buildFormView(
                                       currentSubcategories: currentSubcategories,
@@ -1786,6 +1725,216 @@ Future<void> _openShareSheetForAd(String url) async {
                         ),
                       ),
                     ),
+        ),
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// ✅ Video player widget for signed URLs
+// -----------------------------------------------------------------------------
+class _AdVideoPlayer extends StatefulWidget {
+  final String url;
+  const _AdVideoPlayer({required this.url});
+
+  @override
+  State<_AdVideoPlayer> createState() => _AdVideoPlayerState();
+}
+
+class _AdVideoPlayerState extends State<_AdVideoPlayer> {
+  VideoPlayerController? _videoController;
+  ChewieController? _chewieController;
+
+  @override
+  void initState() {
+    super.initState();
+    _videoController = VideoPlayerController.networkUrl(Uri.parse(widget.url))
+      ..initialize().then((_) {
+        if (!mounted) return;
+        _chewieController = ChewieController(
+          videoPlayerController: _videoController!,
+          autoPlay: false,
+          looping: false,
+          allowFullScreen: true,
+          allowMuting: true,
+        );
+        setState(() {});
+      });
+  }
+
+  @override
+  void dispose() {
+    _chewieController?.dispose();
+    _videoController?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_chewieController == null ||
+        _videoController?.value.isInitialized != true) {
+      return const Center(
+        child: CircularProgressIndicator(color: Colors.white),
+      );
+    }
+    return Chewie(controller: _chewieController!);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// ✅ NEW SCREEN: VerifyBusinessScreen (manual email verification placeholder)
+// -----------------------------------------------------------------------------
+class VerifyBusinessScreen extends StatelessWidget {
+  final String companyId;
+  final String companyName;
+  final String userEmail;
+
+  const VerifyBusinessScreen({
+    super.key,
+    required this.companyId,
+    required this.companyName,
+    required this.userEmail,
+  });
+
+  static const String supportEmail = 'support@bhive.app'; // change if needed
+
+  Future<void> _openEmail(BuildContext context) async {
+    final subject =
+        Uri.encodeComponent('Business verification request - $companyName');
+    final body = Uri.encodeComponent(
+      'Hi B-Hive team,\n\n'
+      'I would like to verify my business on B-Hive.\n\n'
+      'Company name: $companyName\n'
+      'Business reference: $companyId\n'
+      'My login email: ${userEmail.isEmpty ? '—' : userEmail}\n\n'
+      'Proof I represent this business:\n'
+      '- (Add website/social link)\n'
+      '- (Add business email/domain)\n'
+      '- (Add registration info, etc.)\n\n'
+      'Thanks!\n',
+    );
+
+    final uri = Uri.parse('mailto:$supportEmail?subject=$subject&body=$body');
+    final ok = await launchUrl(uri);
+
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text(
+                'Could not open email app. Please copy the email instead.')),
+      );
+    }
+  }
+
+  Future<void> _copyEmail(BuildContext context) async {
+    await Clipboard.setData(const ClipboardData(text: supportEmail));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Support email copied to clipboard.')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: HiveBackground(
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 600),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.6),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(Icons.arrow_back, color: Colors.white),
+                          ),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              'Verify your business',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'To verify your business, please email us and include proof that you represent "$companyName".',
+                        style: const TextStyle(color: Colors.white70, fontSize: 13),
+                      ),
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.06),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Include in your email',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '• Business reference: $companyId\n'
+                              '• Business website or social page\n'
+                              '• Business email/domain (if available)\n'
+                              '• Any proof (registration, invoice header, etc.)',
+                              style: const TextStyle(color: Colors.white70, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      ElevatedButton.icon(
+                        onPressed: () => _openEmail(context),
+                        icon: const Icon(Icons.email),
+                        label: const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 10),
+                          child: Text('Email us to verify',
+                              style: TextStyle(fontSize: 16)),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      OutlinedButton.icon(
+                        onPressed: () => _copyEmail(context),
+                        icon: const Icon(Icons.copy),
+                        label: const Text('Copy support email'),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Support email: $supportEmail',
+                        style: const TextStyle(color: Colors.white60, fontSize: 12),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
