@@ -41,6 +41,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
   final _imageUrlsController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
+
+  // ✅ NEW: Website
+  final _websiteController = TextEditingController();
+
   final _mapsUrlController = TextEditingController();
 
   // Category / Subcategory
@@ -62,7 +66,8 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
   List<Map<String, dynamic>> _myCompanies = [];
   String? _companyId; // null = “creating new”
   bool _isCreatingNew = false;
-  bool _isPaid = false; // subscription flag for the selected company (used as "Verified" for now)
+  bool _isPaid =
+      false; // subscription flag for the selected company (used as "Verified" for now)
 
   // Layout toggle
   bool _showEditForm = false;
@@ -103,6 +108,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     _imageUrlsController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
+
+    // ✅ NEW
+    _websiteController.dispose();
+
     _mapsUrlController.dispose();
 
     _otherCategoryController.dispose();
@@ -153,6 +162,40 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     return n.endsWith('.mp4') || n.endsWith('.mov') || n.endsWith('.webm');
   }
 
+  // ✅ NEW: website launch helper (adds https:// if missing)
+  Future<void> _openWebsite(String? raw) async {
+    final t = (raw ?? '').trim();
+    if (t.isEmpty) return;
+
+    Uri? uri;
+    try {
+      uri = Uri.parse(t);
+    } catch (_) {}
+
+    if (uri == null || uri.scheme.isEmpty) {
+      try {
+        uri = Uri.parse('https://$t');
+      } catch (_) {
+        uri = null;
+      }
+    }
+
+    if (uri == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Invalid website link.')),
+      );
+      return;
+    }
+
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open website.')),
+      );
+    }
+  }
+
   // ✅ Share options (system only for now)
   Future<void> _openShareSheetForAd(String url) async {
     final companyName = _nameController.text.trim().isEmpty
@@ -183,7 +226,8 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
             const ListTile(
               title: Text(
                 'Share Ad',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+                style:
+                    TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
               ),
               subtitle: Text(
                 'Choose how you want to share this ad.',
@@ -193,7 +237,8 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
             const Divider(height: 1, color: Colors.white24),
             ListTile(
               leading: const Icon(Icons.ios_share, color: Colors.white),
-              title: const Text('Share…', style: TextStyle(color: Colors.white)),
+              title:
+                  const Text('Share…', style: TextStyle(color: Colors.white)),
               subtitle: const Text(
                 'System share menu',
                 style: TextStyle(color: Colors.white60, fontSize: 12),
@@ -616,8 +661,8 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
                             url,
                             fit: BoxFit.cover,
                             errorBuilder: (_, __, ___) => const Center(
-                              child:
-                                  Icon(Icons.broken_image, color: Colors.white54),
+                              child: Icon(Icons.broken_image,
+                                  color: Colors.white54),
                             ),
                           ),
                   ),
@@ -713,6 +758,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     _imageUrlsController.clear();
     _emailController.clear();
     _phoneController.clear();
+
+    // ✅ NEW
+    _websiteController.clear();
+
     _mapsUrlController.clear();
 
     _selectedCategory = null;
@@ -750,6 +799,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
       _imageUrlsController.text = (data['image_urls'] ?? '') as String;
       _emailController.text = (data['email'] ?? '') as String;
       _phoneController.text = (data['phone'] ?? '') as String;
+
+      // ✅ NEW
+      _websiteController.text = (data['website'] ?? '') as String;
+
       _mapsUrlController.text = (data['maps_url'] ?? '') as String;
       _logoUrl = (data['logo_url'] ?? '') as String?;
 
@@ -907,6 +960,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
         'image_urls': _imageUrlsController.text.trim(),
         'email': _emailController.text.trim(),
         'phone': _phoneController.text.trim(),
+
+        // ✅ NEW
+        'website': _websiteController.text.trim(),
+
         'maps_url': mapsUrl,
         'owner_id': user.id,
         'is_paid': false, // stays false until you manually verify later
@@ -976,6 +1033,10 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
         'image_urls': _imageUrlsController.text.trim(),
         'email': _emailController.text.trim(),
         'phone': _phoneController.text.trim(),
+
+        // ✅ NEW
+        'website': _websiteController.text.trim(),
+
         'maps_url': mapsUrl,
       };
 
@@ -1037,7 +1098,8 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Only PNG/JPG/WEBP images or MP4/MOV/WEBM videos are allowed.'),
+            content:
+                Text('Only PNG/JPG/WEBP images or MP4/MOV/WEBM videos are allowed.'),
           ),
         );
         return;
@@ -1062,14 +1124,19 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
           );
 
       try {
-        await supabase.from('companies').update({'has_ads': true}).eq('id', _companyId!);
+        await supabase
+            .from('companies')
+            .update({'has_ads': true}).eq('id', _companyId!);
       } catch (_) {}
 
       await _loadMyAds();
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(isVideo ? 'Video uploaded successfully' : 'Image uploaded successfully')),
+        SnackBar(
+            content: Text(isVideo
+                ? 'Video uploaded successfully'
+                : 'Image uploaded successfully')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -1273,6 +1340,9 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
     }
     final subtitle = subtitleParts.join(' • ');
 
+    final websiteText =
+        _websiteController.text.trim().isEmpty ? '—' : _websiteController.text.trim();
+
     return Container(
       margin: const EdgeInsets.only(top: 16),
       padding: const EdgeInsets.all(12),
@@ -1364,10 +1434,36 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
             'Phone: ${_phoneController.text.trim().isEmpty ? '—' : _phoneController.text.trim()}',
             style: const TextStyle(color: Colors.white70, fontSize: 12),
           ),
-          const Text(
-            'Website: —',
-            style: TextStyle(color: Colors.white70, fontSize: 12),
+
+          // ✅ Website (clickable)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Website: ',
+                style: TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              Expanded(
+                child: websiteText == '—'
+                    ? const Text(
+                        '—',
+                        style: TextStyle(color: Colors.white70, fontSize: 12),
+                      )
+                    : GestureDetector(
+                        onTap: () => _openWebsite(websiteText),
+                        child: Text(
+                          websiteText,
+                          style: const TextStyle(
+                            color: Colors.amberAccent,
+                            fontSize: 12,
+                            decoration: TextDecoration.underline,
+                          ),
+                        ),
+                      ),
+              ),
+            ],
           ),
+
           const SizedBox(height: 12),
           Wrap(
             spacing: 10,
@@ -1433,7 +1529,8 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
           controller: _nameController,
           style: const TextStyle(color: Colors.white),
           decoration: bhiveInputDecoration('Company Name'),
-          validator: (v) => (v == null || v.isEmpty) ? 'Enter a company name' : null,
+          validator: (v) =>
+              (v == null || v.isEmpty) ? 'Enter a company name' : null,
         ),
         const SizedBox(height: 12),
         TextFormField(
@@ -1639,6 +1736,16 @@ class _BusinessProfileScreenState extends State<BusinessProfileScreen> {
           decoration: bhiveInputDecoration('Contact Phone'),
           keyboardType: TextInputType.phone,
         ),
+
+        // ✅ NEW: Website field under phone (create + edit)
+        const SizedBox(height: 12),
+        TextFormField(
+          controller: _websiteController,
+          style: const TextStyle(color: Colors.white),
+          decoration: bhiveInputDecoration('Business Website'),
+          keyboardType: TextInputType.url,
+        ),
+
         const SizedBox(height: 20),
         ElevatedButton(
           onPressed: _saving
@@ -1902,7 +2009,8 @@ class VerifyBusinessScreen extends StatelessWidget {
                               '• Business website or social page\n'
                               '• Business email/domain (if available)\n'
                               '• Any proof (registration, invoice header, etc.)',
-                              style: const TextStyle(color: Colors.white70, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 12),
                             ),
                           ],
                         ),
@@ -1913,8 +2021,8 @@ class VerifyBusinessScreen extends StatelessWidget {
                         icon: const Icon(Icons.email),
                         label: const Padding(
                           padding: EdgeInsets.symmetric(vertical: 10),
-                          child: Text('Email us to verify',
-                              style: TextStyle(fontSize: 16)),
+                          child:
+                              Text('Email us to verify', style: TextStyle(fontSize: 16)),
                         ),
                       ),
                       const SizedBox(height: 10),

@@ -41,6 +41,10 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
   bool _claimedLoading = true;
   bool _claimedLive = false;
 
+  // ✅ NEW: Live company row (so we show latest description/slogan/contact)
+  Map<String, dynamic>? _companyLive;
+  bool _companyLiveLoading = true;
+
   @override
   void initState() {
     super.initState();
@@ -61,6 +65,78 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
     _loadMyRating();
     _loadCompanyAds();
     _loadClaimedLive(); // ✅ NEW
+
+    // ✅ NEW: Always fetch the latest company row so details are up-to-date
+    _loadCompanyLive();
+  }
+
+  // ---------------------------------------------------------------------------
+  // ✅ NEW: Website launcher helper (clickable website)
+  // ---------------------------------------------------------------------------
+  Future<void> _openWebsite(String? raw) async {
+    final t = (raw ?? '').trim();
+    if (t.isEmpty) {
+      _snack('No website available.');
+      return;
+    }
+
+    Uri? uri;
+    try {
+      uri = Uri.parse(t);
+    } catch (_) {}
+
+    // If no scheme, assume https
+    if (uri == null || uri.scheme.isEmpty) {
+      try {
+        uri = Uri.parse('https://$t');
+      } catch (_) {
+        uri = null;
+      }
+    }
+
+    if (uri == null) {
+      _snack('Invalid website link.');
+      return;
+    }
+
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok) _snack('Could not open website.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // ✅ Live company row (full row)
+  // ---------------------------------------------------------------------------
+  Future<void> _loadCompanyLive() async {
+    try {
+      final companyId = widget.company['id'];
+      final data = await supabase
+          .from('companies')
+          .select() // ✅ pull ALL columns
+          .eq('id', companyId)
+          .maybeSingle();
+
+      if (!mounted) return;
+
+      if (data != null) {
+        setState(() {
+          _companyLive = Map<String, dynamic>.from(data);
+          _companyLiveLoading = false;
+
+          // Keep rating summary in sync too (best effort)
+          _ratingAvg = (data['rating_avg'] is num)
+              ? (data['rating_avg'] as num).toDouble()
+              : _ratingAvg;
+          _ratingCount = (data['rating_count'] is num)
+              ? (data['rating_count'] as num).toInt()
+              : _ratingCount;
+        });
+      } else {
+        setState(() => _companyLiveLoading = false);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _companyLiveLoading = false);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -89,7 +165,8 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
           .eq('id', companyId)
           .maybeSingle();
 
-      final live = data == null ? _isClaimedRow(widget.company) : _isClaimedRow(data);
+      final live =
+          data == null ? _isClaimedRow(widget.company) : _isClaimedRow(data);
 
       if (!mounted) return;
       setState(() {
@@ -208,7 +285,9 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
   }
 
   Future<void> _openShareSheetForAd(String url) async {
-    final c = widget.company;
+    // ✅ use live company if available
+    final c = _companyLive ?? widget.company;
+
     final companyName = (c['name'] ?? '').toString().trim().isEmpty
         ? 'B-Hive'
         : (c['name'] ?? '').toString().trim();
@@ -272,11 +351,13 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
     final pageController = PageController(initialPage: initialIndex);
     int currentIndex = initialIndex;
 
-    final c = widget.company;
+    // ✅ use live company if available
+    final c = _companyLive ?? widget.company;
+
     final String logoUrl = (c['logo_url'] ?? '').toString();
-    final String companyName = (c['name'] ?? '').toString().trim().isEmpty
-        ? 'Company'
-        : (c['name'] ?? '').toString().trim();
+    final String companyName = (c['name'] ?? '').toString().trim().isNotEmpty
+        ? (c['name'] ?? '').toString().trim()
+        : 'Company';
 
     showDialog(
       context: context,
@@ -653,6 +734,9 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
 
       await _refreshCompanyRatingSummary();
 
+      // ✅ NEW: refresh full company row too (keeps UI consistent)
+      await _loadCompanyLive();
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Rating saved.')),
@@ -791,15 +875,21 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
       ),
     );
     await _loadClaimedLive();
+
+    // ✅ NEW: refresh full row too (so updated details appear)
+    await _loadCompanyLive();
   }
 
   @override
   Widget build(BuildContext context) {
-    final c = widget.company;
+    // ✅ Use live row if available (so description/slogan/contact update)
+    final c = _companyLive ?? widget.company;
     final String logoUrl = (c['logo_url'] ?? '').toString();
 
     // ✅ use LIVE state for UI
     final bool isClaimed = _claimedLoading ? _isClaimedRow(c) : _claimedLive;
+
+    final website = (c['website'] ?? '').toString().trim();
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -917,6 +1007,15 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                                   '${c['category'] ?? ''} • ${c['city'] ?? ''}',
                                   style: const TextStyle(color: Colors.white70),
                                 ),
+                                if (_companyLiveLoading)
+                                  const Padding(
+                                    padding: EdgeInsets.only(top: 6),
+                                    child: Text(
+                                      'Updating details…',
+                                      style: TextStyle(
+                                          color: Colors.white38, fontSize: 11),
+                                    ),
+                                  ),
                               ],
                             ),
                           ),
@@ -1030,9 +1129,33 @@ class _CompanyDetailScreenState extends State<CompanyDetailScreen> {
                         'Phone: ${c['phone'] ?? '—'}',
                         style: const TextStyle(color: Colors.white70),
                       ),
-                      Text(
-                        'Website: ${c['website'] ?? '—'}',
-                        style: const TextStyle(color: Colors.white70),
+
+                      // ✅ CLICKABLE WEBSITE (only change in UI)
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Website: ',
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                          Expanded(
+                            child: website.isEmpty
+                                ? const Text(
+                                    '—',
+                                    style: TextStyle(color: Colors.white70),
+                                  )
+                                : GestureDetector(
+                                    onTap: () => _openWebsite(website),
+                                    child: Text(
+                                      website,
+                                      style: const TextStyle(
+                                        color: Colors.amberAccent,
+                                        decoration: TextDecoration.underline,
+                                      ),
+                                    ),
+                                  ),
+                          ),
+                        ],
                       ),
 
                       const SizedBox(height: 12),
@@ -1280,7 +1403,8 @@ class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
     final user = supabase.auth.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You must be logged in to claim a business.')),
+        const SnackBar(
+            content: Text('You must be logged in to claim a business.')),
       );
       return;
     }
@@ -1297,7 +1421,8 @@ class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
     if (_evidenceController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please describe how you are connected to this business.'),
+          content:
+              Text('Please describe how you are connected to this business.'),
         ),
       );
       return;
@@ -1324,7 +1449,8 @@ class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Claim submitted. We will review it and get back to you.'),
+          content:
+              Text('Claim submitted. We will review it and get back to you.'),
         ),
       );
 
@@ -1381,7 +1507,6 @@ class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
                         ],
                       ),
                       const SizedBox(height: 8),
-
                       Text(
                         'Tell us how you are connected to "$name". '
                         'For example: your role, business email, website, social media, or other proof that you represent this business.',
@@ -1391,7 +1516,6 @@ class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
                         ),
                       ),
                       const SizedBox(height: 16),
-
                       TextField(
                         controller: _evidenceController,
                         maxLines: 5,
@@ -1402,9 +1526,7 @@ class _ClaimBusinessScreenState extends State<ClaimBusinessScreen> {
                               'Example: "I am the owner. My official email is info@mybusiness.co.za and our website is www.mybusiness.co.za."',
                         ),
                       ),
-
                       const SizedBox(height: 20),
-
                       ElevatedButton.icon(
                         onPressed: _submitting ? null : _submitClaim,
                         icon: _submitting

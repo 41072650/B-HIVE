@@ -15,9 +15,11 @@ class HiveBackground extends StatelessWidget {
         image: DecorationImage(
           image: AssetImage('assets/images/hexBG.jpg'),
           fit: BoxFit.cover,
+
+          // 🎯 Tuned to match dark premium panels
           colorFilter: ColorFilter.mode(
-            Colors.black54,
-            BlendMode.darken,
+            Color(0xCC0F1115), // deep charcoal (matches panel surfaces)
+            BlendMode.multiply,
           ),
         ),
       ),

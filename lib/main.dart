@@ -16,15 +16,24 @@ class ConnectHiveApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    const seed = Color.fromARGB(255, 241, 178, 70);
+
     return MaterialApp(
       title: 'B-Hive',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: false, // keep M2 for nicer AppBar styling
 
+        // ✅ makes screens look cleaner without touching other files
+        canvasColor: const Color(0xFF0F1115),
+
+        // ✅ same idea, just slightly refined for nicer dark surfaces
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color.fromARGB(255, 241, 178, 70),
+          seedColor: seed,
           brightness: Brightness.dark,
+        ).copyWith(
+          primary: seed,
+          surface: const Color(0xFF141823),
         ),
 
         appBarTheme: const AppBarTheme(
@@ -35,13 +44,13 @@ class ConnectHiveApp extends StatelessWidget {
           titleTextStyle: TextStyle(
             color: Colors.white,
             fontSize: 22,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.3,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.2,
             shadows: [
               Shadow(
-                blurRadius: 4,
+                blurRadius: 6,
                 color: Colors.black87,
-                offset: Offset(1, 1),
+                offset: Offset(1, 2),
               ),
             ],
           ),
@@ -54,8 +63,7 @@ class ConnectHiveApp extends StatelessWidget {
       // ⬇️ NEW: route for posting a job
       routes: {
         '/post-job': (context) {
-          final companyId =
-              ModalRoute.of(context)!.settings.arguments as String;
+          final companyId = ModalRoute.of(context)!.settings.arguments as String;
           return PostJobScreen(companyId: companyId);
         },
       },
